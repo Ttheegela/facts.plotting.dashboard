@@ -190,6 +190,19 @@ WORKFLOW_COMPONENT_FILES = {
     },
 }
 
+# When a workflow component file is missing, sum these sub-files instead.
+# wf1f AIS local: ar5AIS outputs EAIS + WAIS separately — no combined local file exists.
+WORKFLOW_COMPONENT_FALLBACK_SUM = {
+    "wf1f": {
+        "AIS": {
+            "local": [
+                "coupling.{ssp}.ar5AIS.ipccar5.icesheets_EAIS_{scale}sl.nc",
+                "coupling.{ssp}.ar5AIS.ipccar5.icesheets_WAIS_{scale}sl.nc",
+            ]
+        }
+    }
+}
+
 # Workflow-independent components (same file for all workflows).
 WORKFLOW_INDEPENDENT_COMPONENTS = {
     "sterodynamics":    "coupling.{ssp}.ocean.tlm.sterodynamics_{scale}sl.nc",
@@ -365,6 +378,39 @@ def compute_quantiles(nc_path: Path) -> dict:
     }
 
 
+def compute_quantiles_sum(nc_paths: list) -> dict:
+    """
+    Sum sea_level_change arrays across multiple .nc files, then compute quantiles.
+    Used for wf1f AIS local: EAIS_localsl + WAIS_localsl (no combined file exists).
+
+    Args:
+        nc_paths: List of Path objects to sum. All must share the same shape.
+
+    Returns:
+        Same dict format as compute_quantiles().
+    """
+    combined = None
+    ref_ds   = None
+    for path in nc_paths:
+        ds = xr.open_dataset(path)
+        if "sea_level_change" not in ds:
+            raise KeyError(f"Variable 'sea_level_change' not found in {path.name}")
+        sl = ds["sea_level_change"].values      # (samples, years, locations)
+        if combined is None:
+            combined = sl
+            ref_ds   = ds
+        else:
+            combined = combined + sl
+    q = np.quantile(combined, QUANTILES, axis=0)
+    return {
+        "years":     ref_ds.years.values.tolist(),
+        "locations": ref_ds.locations.values.tolist(),
+        "q":         q,
+        "lat":       ref_ds["lat"].values.tolist() if "lat" in ref_ds else [],
+        "lon":       ref_ds["lon"].values.tolist() if "lon" in ref_ds else [],
+    }
+
+
 def _store_result(data_dict, location_meta, result, key_prefix):
     """
     Store quantile results into data_dict and location_meta.
@@ -461,13 +507,32 @@ def precompute_all(entries: list, wfs: list) -> tuple:
                     nc_path = out_dir / pattern.format(ssp=ssp, scale=scale)
                     log.debug("  %s  %s  %s  %s", wf, comp, scale, nc_path.name)
                     if not nc_path.exists():
-                        log.debug("  Not found — skipping")
-                        continue
-                    try:
-                        result = compute_quantiles(nc_path)
-                    except Exception as exc:
-                        log.warning("Failed to load %s: %s", nc_path.name, exc)
-                        continue
+                        # Check for a fallback sum (e.g. wf1f AIS local = EAIS + WAIS)
+                        fallback = (WORKFLOW_COMPONENT_FALLBACK_SUM
+                                    .get(wf, {}).get(comp, {}).get(scale))
+                        if fallback:
+                            fb_paths = [out_dir / p.format(ssp=ssp, scale=scale)
+                                        for p in fallback]
+                            if all(p.exists() for p in fb_paths):
+                                log.debug("  Fallback sum: %s", [p.name for p in fb_paths])
+                                try:
+                                    result = compute_quantiles_sum(fb_paths)
+                                except Exception as exc:
+                                    log.warning("Failed fallback sum %s|%s|%s|%s: %s",
+                                                ssp, comp, wf, scale, exc)
+                                    continue
+                            else:
+                                log.debug("  Not found and fallback incomplete — skipping")
+                                continue
+                        else:
+                            log.debug("  Not found — skipping")
+                            continue
+                    else:
+                        try:
+                            result = compute_quantiles(nc_path)
+                        except Exception as exc:
+                            log.warning("Failed to load %s: %s", nc_path.name, exc)
+                            continue
                     if years_ref is None or len(result["years"]) > len(years_ref):
                         years_ref = result["years"]
                     _store_result(data_dict, location_meta, result, f"{ssp}|{comp}|{wf}|{scale}")
