@@ -1,0 +1,5 @@
+bokeh==3.4.3
+xarray==2025.1.2
+numpy==2.2.3
+pandas==2.2.3
+netCDF4==1.7.2
