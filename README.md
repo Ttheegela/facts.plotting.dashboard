@@ -4,7 +4,7 @@ Generate an interactive, self-contained HTML dashboard from [FACTS](https://gith
 No FACTS installation required — just Docker (or Python ≥ 3.9).
 The output is a **single `.html` file** you can open in any browser — no web server, no internet connection required.
 
-> **Example dashboard:** [v1.0.0 release](https://github.com/tt633/facts.in/releases/tag/v1.0.0)
+> **Example dashboard:** [v1.0.0 release](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.0.0)
 
 ---
 
