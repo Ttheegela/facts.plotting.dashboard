@@ -234,8 +234,16 @@ def _count_nc_locations(out_dir: Path) -> int:
     """
     Return the number of tide gauge locations in the first available
     *.total.workflow.*.local.nc file found in out_dir.
-    Used to prefer the output directory that has more locations (more complete run).
-    Returns 0 if no suitable file exists or the file cannot be read.
+
+    Why this exists:
+        Some SSP directories contain both an "output/" and an "output copy/"
+        folder.  "output copy" is typically the original complete run (e.g. all
+        24 Indian Ocean tide gauges), while "output/" may be a newer partial run
+        with fewer locations.  This helper lets collect_ssp_entries() compare the
+        two folders by location count and automatically pick the more complete one,
+        so the dashboard always loads the richest available data.
+
+    Returns 0 if no suitable file is found or the file cannot be opened.
     """
     candidates = list(out_dir.glob("*.total.workflow.*.local.nc"))
     if not candidates:
@@ -273,10 +281,12 @@ def collect_ssp_entries(exp_root: Path = None, ssp_dirs: list = None) -> list:
             out = d / "output"
             if not (out.is_dir() and any(out.glob("*.total.workflow.*.nc"))):
                 continue
-            # If an "output copy" directory also exists, pick whichever has more
-            # tide gauge locations in its local nc files.  This handles the case
-            # where output/ is a partial/newer run (e.g. ssp585 run with only 1
-            # location) while "output copy" holds the full original Indian Ocean run.
+            # ── output vs "output copy" selection ─────────────────────────────
+            # Some SSPs have two output directories.  "output copy" is typically
+            # the original full run (e.g. 24 Indian Ocean tide gauges) while
+            # "output/" may be a newer partial re-run with fewer stations.
+            # We compare location counts and prefer whichever directory is more
+            # complete — no hardcoding of SSP names required.
             out_copy = d / "output copy"
             if out_copy.is_dir() and any(out_copy.glob("*.total.workflow.*.nc")):
                 n_out  = _count_nc_locations(out)
@@ -1035,14 +1045,35 @@ def _build_stacked_bar_section(
     location_meta_js: dict,
 ) -> object:
     """
-    Build the stacked bar chart section (mirrors reference plot style).
+    Build the stacked bar chart section (new in v1.1).
 
-    X-axis  = all tide gauge locations (one bar per station)
-    Stacks  = SSP scenarios, bottom to top: ssp126 -> ssp245 -> ssp370 -> ssp585
-    Values  = p50 median RSL (mm) at selected workflow, component, scale, year
+    PURPOSE
+    -------
+    The line plot answers "how does sea level evolve at one station over time?"
+    This chart answers a different question: "across ALL stations, how much does
+    the choice of emissions scenario matter at a given year?"  Showing all tide
+    gauge locations side-by-side with SSPs stacked makes both spatial spread and
+    scenario spread visible at a glance — something the line plot cannot do.
+
+    LAYOUT
+    ------
+    X-axis  = all local tide gauge locations (one bar group per station)
+    Stacks  = SSP scenarios, rendered bottom to top:
+              ssp126 (lowest emissions) → ssp245 → ssp370 → ssp585 (highest)
+    Y-axis  = p50 median RSL change (mm) at the selected year
+
+    COLUMN DATA SOURCE DESIGN
+    -------------------------
+    Bokeh's vbar_stack() requires one column per stack layer and renders them
+    as cumulative sums (i.e. each layer sits on top of all layers below it).
+    To show the INDIVIDUAL (non-cumulative) value for each SSP in the hover
+    tooltip, we store a separate set of columns:
+        - ssp126, ssp245, ... → raw values passed directly to vbar_stack as stackers
+        - val_ssp126, val_ssp245, ... → same raw values, used by HoverTool
+        - val_ssp126_fmt, ... → formatted strings ("123.4") for tooltip display
+    Both sets are refreshed together by the CustomJS callback on every control change.
 
     Controls match the existing line plot: workflow, component, scale, year.
-    HoverTool shows location info + individual (non-cumulative) value per SSP.
 
     Args:
         data_dict:        Full data dict keyed by {ssp}|{component}|{wf}|{scale}|{loc_id}.
@@ -1055,12 +1086,14 @@ def _build_stacked_bar_section(
     Returns:
         Bokeh Column layout: header div + controls row + stacked bar figure.
     """
-    # Stack order: lowest emission at bottom, SSP5-8.5 always on top
+    # ── Stack order ───────────────────────────────────────────────────────────
+    # SSP1-2.6 (lowest emissions) rendered at the bottom, SSP5-8.5 at the top.
+    # Any SSPs in the data that are not in STACK_ORDER (e.g. ssp119) are prepended
+    # so they appear below ssp126 rather than being silently dropped.
     STACK_ORDER = ["ssp126", "ssp245", "ssp370", "ssp585"]
-    stack_ssps  = [s for s in STACK_ORDER if s in ssps]   # only include present SSPs
-    # Any SSPs in the data but not in STACK_ORDER go just below ssp585
-    extras = [s for s in ssps if s not in STACK_ORDER]
-    stack_ssps = extras + stack_ssps
+    stack_ssps  = [s for s in STACK_ORDER if s in ssps]
+    extras      = [s for s in ssps if s not in STACK_ORDER]
+    stack_ssps  = extras + stack_ssps
 
     SSP_STACK_COLORS = {
         "ssp119": "#1f77b4",
@@ -1071,7 +1104,10 @@ def _build_stacked_bar_section(
         "ssp534": "#bcbd22",
     }
 
-    # -- Local locations only (exclude global mean loc_id = -1) --
+    # ── Local locations only ──────────────────────────────────────────────────
+    # The stacked bar chart shows one bar per tide gauge station.  The global
+    # mean (loc_id = -1) is a single scalar and does not belong on the x-axis
+    # alongside the per-station bars, so it is excluded here.
     local_locs = [(lid, lbl) for lid, lbl in loc_options_all if int(lid) >= 0]
     loc_ids    = [int(lid) for lid, _ in local_locs]
     loc_names  = [
@@ -1108,9 +1144,13 @@ def _build_stacked_bar_section(
         except ValueError:
             return 0.0
 
-    # -- Initial ColumnDataSource --
-    # Stack columns: cumulative sums for vbar_stack
-    # Individual value columns (val_<ssp>): non-cumulative, for readable hover
+    # ── Initial ColumnDataSource ──────────────────────────────────────────────
+    # Two parallel column sets per SSP (see docstring for full explanation):
+    #   ssp126, ssp245, ...          → raw values; passed to vbar_stack as stackers
+    #                                   (Bokeh renders these as cumulative sums automatically)
+    #   val_ssp126, val_ssp245, ...  → same raw values; read by HoverTool
+    #   val_ssp126_fmt, ...          → pre-formatted strings for tooltip display
+    # Both sets are rebuilt by the CustomJS callback on every control change.
     n = len(loc_ids)
     init_data = {
         "x":         list(range(n)),
@@ -1144,7 +1184,10 @@ def _build_stacked_bar_section(
         x_axis_label="Tide Gauge",
     )
 
-    # Build hover tooltip rows: one line per SSP showing individual (non-cumulative) value
+    # ── Hover tooltip ─────────────────────────────────────────────────────────
+    # Shows station name, ID, coordinates, then one line per SSP with its
+    # individual (non-cumulative) RSL value in mm.  The @val_<ssp>_fmt columns
+    # hold pre-formatted strings so the tooltip does not need to do any maths.
     tooltip_rows = [
         ("Location", "@loc_names"),
         ("ID",       "@loc_ids"),
@@ -1159,6 +1202,9 @@ def _build_stacked_bar_section(
     hover = HoverTool(tooltips=tooltip_rows)
     p_bar.add_tools(hover)
 
+    # ── vbar_stack ────────────────────────────────────────────────────────────
+    # stackers = column names in source_bar; Bokeh accumulates them automatically
+    # so each SSP band sits on top of all SSPs below it in the list.
     renderers = p_bar.vbar_stack(
         stackers=stack_ssps,
         x="x",
@@ -1181,7 +1227,9 @@ def _build_stacked_bar_section(
     p_bar.legend[0].click_policy    = "hide"
     p_bar.legend[0].spacing         = 6
 
-    # -- Controls (same set as the existing line plot) --
+    # ── Controls ─────────────────────────────────────────────────────────────
+    # Identical widget set to the line plot: workflow, component, scale, year.
+    # All four drive the CustomJS callback which rebuilds the ColumnDataSource.
     wf_opts   = [(wf, WF_LABELS.get(wf, wf)) for wf in wfs]
     comp_opts = [(c, c) for c in COMPONENTS]
 
@@ -1193,9 +1241,18 @@ def _build_stacked_bar_section(
     )
     year_sel  = Select(title="Year:", value=default_year_str, options=year_opts, width=120)
 
-    # -- CustomJS callback --
-    # Stack columns AND individual value columns are both updated.
-    # Individual val_<ssp> and val_<ssp>_fmt columns power the readable hover tooltip.
+    # ── CustomJS callback ─────────────────────────────────────────────────────
+    # Runs entirely in the browser — no Python server required after page load.
+    # On every control change it:
+    #   1. Reads the current widget values (workflow, component, scale, year)
+    #   2. Loops over every tide gauge location and every SSP
+    #   3. Looks up the p50 median for that combination in data_dict
+    #      (key format: "{ssp}|{comp}|{wf}|{scale}|{loc_id}")
+    #   4. Writes raw values into the ssp* columns (used by vbar_stack for heights)
+    #      AND into the val_*_fmt columns (used by the hover tooltip)
+    #   5. Pushes the new data into source_bar and updates the chart title
+    # Note: Bokeh CustomJS cannot add or remove renderers after page load, so the
+    # stack column names are fixed at render time and always include all SSPs.
     JS_BAR = """
     const wf    = wf_sel.value;
     const comp  = comp_sel.value;
