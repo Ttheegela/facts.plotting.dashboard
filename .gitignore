@@ -2,3 +2,5 @@
 *.html
 __pycache__/
 *.pyc
+.Rhistory
+.claude/
