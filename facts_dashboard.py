@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 facts_dashboard.py — FACTS Sea-Level Projection Dashboard Generator
-Version: 1.0.0
+Version: 1.1.1
 
 Generates a fully self-contained, interactive HTML dashboard from FACTS output
 .nc files. No server required — open the HTML in any browser.
@@ -85,7 +85,7 @@ from bokeh.io import save
 from bokeh.layouts import column, row
 from bokeh.models import (
     Checkbox, ColumnDataSource, CustomJS, DataTable, Div,
-    HTMLTemplateFormatter, Range1d, RangeSlider, Select, TableColumn,
+    HTMLTemplateFormatter, HoverTool, Range1d, RangeSlider, Select, TableColumn,
 )
 from bokeh.plotting import figure
 from bokeh.resources import INLINE   # embeds all JS/CSS inline so the HTML is self-contained
@@ -230,6 +230,25 @@ YMAX_FIXED = 6000
 # Discovery helpers
 # ─────────────────────────────────────────────────────────
 
+def _count_nc_locations(out_dir: Path) -> int:
+    """
+    Return the number of tide gauge locations in the first available
+    *.total.workflow.*.local.nc file found in out_dir.
+    Used to prefer the output directory that has more locations (more complete run).
+    Returns 0 if no suitable file exists or the file cannot be read.
+    """
+    candidates = list(out_dir.glob("*.total.workflow.*.local.nc"))
+    if not candidates:
+        return 0
+    try:
+        ds = xr.open_dataset(candidates[0])
+        n  = int(ds.locations.size)
+        ds.close()
+        return n
+    except Exception:
+        return 0
+
+
 def collect_ssp_entries(exp_root: Path = None, ssp_dirs: list = None) -> list:
     """
     Returns a list of (ssp_tag, output_dir, exp_dir) tuples.
@@ -252,11 +271,24 @@ def collect_ssp_entries(exp_root: Path = None, ssp_dirs: list = None) -> list:
             if not (d.is_dir() and d.name.startswith("coupling.ssp")):
                 continue
             out = d / "output"
-            if out.is_dir() and any(out.glob("*.total.workflow.*.nc")):
-                tag = d.name[len("coupling."):]
-                entries.append((tag, out, d))
-                seen_tags.add(tag)
-                log.info("Found SSP %s in %s", tag, d)
+            if not (out.is_dir() and any(out.glob("*.total.workflow.*.nc"))):
+                continue
+            # If an "output copy" directory also exists, pick whichever has more
+            # tide gauge locations in its local nc files.  This handles the case
+            # where output/ is a partial/newer run (e.g. ssp585 run with only 1
+            # location) while "output copy" holds the full original Indian Ocean run.
+            out_copy = d / "output copy"
+            if out_copy.is_dir() and any(out_copy.glob("*.total.workflow.*.nc")):
+                n_out  = _count_nc_locations(out)
+                n_copy = _count_nc_locations(out_copy)
+                if n_copy > n_out:
+                    log.info("Preferring 'output copy' for %s (%d locs > %d locs in output/)",
+                             d.name, n_copy, n_out)
+                    out = out_copy
+            tag = d.name[len("coupling."):]
+            entries.append((tag, out, d))
+            seen_tags.add(tag)
+            log.info("Found SSP %s in %s", tag, out)
 
     for raw in (ssp_dirs or []):
         p = Path(raw).resolve()
@@ -994,6 +1026,264 @@ def _build_component_table_section(
     return column(comp_head, row(wf_sel, year_sel, scale_sel, loc_sel), data_table)
 
 
+def _build_stacked_bar_section(
+    data_dict:        dict,
+    years:            list,
+    ssps:             list,
+    wfs:              list,
+    loc_options_all:  list,
+    location_meta_js: dict,
+) -> object:
+    """
+    Build the grouped bar chart section.
+
+    X-axis  = all tide gauge locations; within each group one bar per SSP scenario
+    Y-axis  = RSL (mm) at selected quantile, workflow, component, scale, year
+    Colors  = one colour per SSP (consistent with line plot palette)
+
+    Controls: workflow, component, scale, year, quantile.
+    HoverTool shows location name, coords, SSP label, and value.
+    """
+    SSP_ORDER = ["ssp119", "ssp126", "ssp245", "ssp370", "ssp534", "ssp585"]
+    plot_ssps = [s for s in SSP_ORDER if s in ssps] + [s for s in ssps if s not in SSP_ORDER]
+    n_ssps    = len(plot_ssps)
+
+    # -- Local locations only --
+    local_locs = [(lid, lbl) for lid, lbl in loc_options_all if int(lid) >= 0]
+    loc_ids    = [int(lid) for lid, _ in local_locs]
+    loc_names  = [
+        location_meta_js.get(str(lid), {}).get("name", str(lid))
+        for lid in loc_ids
+    ]
+    loc_lat = [
+        f"{location_meta_js[str(lid)]['lat']:.3f}"
+        if location_meta_js.get(str(lid), {}).get("lat") is not None else "N/A"
+        for lid in loc_ids
+    ]
+    loc_lon = [
+        f"{location_meta_js[str(lid)]['lon']:.3f}"
+        if location_meta_js.get(str(lid), {}).get("lon") is not None else "N/A"
+        for lid in loc_ids
+    ]
+    n_locs = len(loc_ids)
+
+    # -- Defaults --
+    default_wf       = wfs[0]
+    default_comp     = "total"
+    default_scale    = "local"
+    default_q_key    = "med"
+    year_opts        = [str(y) for y in sorted(set(years))]
+    default_year_str = "2100" if "2100" in year_opts else year_opts[-1]
+    default_year     = int(default_year_str)
+
+    # -- Grouped bar x-positions --
+    # Each location group occupies (n_ssps * bar_width + gap).
+    # Bar i within group j sits at: j * group_step + i * bar_width - half_group
+    bar_w      = 0.15
+    gap        = 0.25
+    group_step = n_ssps * bar_w + gap
+    half_group = (n_ssps * bar_w) / 2.0
+
+    def _bar_x(loc_idx, ssp_idx):
+        return loc_idx * group_step + ssp_idx * bar_w - half_group + bar_w / 2.0
+
+    group_centers = [i * group_step for i in range(n_locs)]
+
+    # -- Helper: fetch one value from data_dict --
+    def _val(ssp, comp, wf, scale, loc_id, year, q_key):
+        lookup = -1 if scale == "global" else loc_id
+        d = data_dict.get(f"{ssp}|{comp}|{wf}|{scale}|{lookup}")
+        if not d:
+            return 0.0
+        try:
+            return d[q_key][d["years"].index(year)]
+        except (ValueError, KeyError):
+            return 0.0
+
+    # -- Build flat per-bar arrays for ColumnDataSource --
+    def _build_arrays(comp, wf, scale, year, q_key):
+        xs, ys, colors, ssp_lbls, lnames, lids, llat, llon = [], [], [], [], [], [], [], []
+        for li, loc_id in enumerate(loc_ids):
+            for si, ssp in enumerate(plot_ssps):
+                xs.append(_bar_x(li, si))
+                ys.append(_val(ssp, comp, wf, scale, loc_id, year, q_key))
+                colors.append(SSP_COLORS.get(ssp, _FALLBACK_COLORS[si % len(_FALLBACK_COLORS)]))
+                ssp_lbls.append(SSP_LABELS.get(ssp, ssp))
+                lnames.append(loc_names[li])
+                lids.append(str(loc_id))
+                llat.append(loc_lat[li])
+                llon.append(loc_lon[li])
+        return dict(
+            x=xs, y=ys, colors=colors,
+            ssp_labels=ssp_lbls, loc_names=lnames,
+            loc_ids=lids, loc_lat=llat, loc_lon=llon,
+        )
+
+    init_data  = _build_arrays(default_comp, default_wf, default_scale,
+                               default_year, default_q_key)
+    source_bar = ColumnDataSource(data=init_data)
+
+    # -- Figure --
+    x_end = n_locs * group_step - gap / 2.0
+    p_bar = figure(
+        x_range=(-group_step * 0.3, x_end),
+        width=1200,
+        height=520,
+        title=(
+            f"RSL Projections at {default_year} — SSP Comparison per Tide Gauge"
+            f"  ({default_wf}, {default_comp}, {default_scale}, median)"
+        ),
+        toolbar_location="above",
+        tools="pan,wheel_zoom,box_zoom,reset,save",
+        y_axis_label="RSL Change (mm)",
+        x_axis_label="Tide Gauge",
+    )
+
+    hover = HoverTool(tooltips=[
+        ("Location", "@loc_names"),
+        ("SSP",      "@ssp_labels"),
+        ("Value",    "@y{0.1f} mm"),
+        ("Lat",      "@loc_lat"),
+        ("Lon",      "@loc_lon"),
+    ])
+    p_bar.add_tools(hover)
+
+    p_bar.vbar(x="x", top="y", width=bar_w * 0.9, color="colors",
+               source=source_bar, line_color="white", line_width=0.5)
+
+    # x-axis: one tick per location group, labelled with location name
+    p_bar.xaxis.ticker = group_centers
+    p_bar.xaxis.major_label_overrides = {c: loc_names[i] for i, c in enumerate(group_centers)}
+    p_bar.xaxis.major_label_orientation = 1.0
+
+    # -- Legend: one entry per SSP (manual, outside plot) --
+    from bokeh.models import Legend, LegendItem, GlyphRenderer
+    legend_items = []
+    for si, ssp in enumerate(plot_ssps):
+        color = SSP_COLORS.get(ssp, _FALLBACK_COLORS[si % len(_FALLBACK_COLORS)])
+        dummy_src = ColumnDataSource(data=dict(x=[0], y=[0]))
+        dummy_r   = p_bar.vbar(x="x", top="y", width=bar_w, color=color,
+                               source=dummy_src, visible=False)
+        legend_items.append(LegendItem(label=SSP_LABELS.get(ssp, ssp), renderers=[dummy_r]))
+    legend = Legend(items=legend_items, title="SSP Scenario",
+                    title_text_font_style="bold", label_text_font_size="12px",
+                    click_policy="hide", spacing=6)
+    p_bar.add_layout(legend, "right")
+
+    # -- Controls --
+    wf_opts   = [(wf, WF_LABELS.get(wf, wf)) for wf in wfs]
+    comp_opts = [(c, c) for c in COMPONENTS]
+    q_opts    = [
+        ("vlo", "5th percentile"),
+        ("lo",  "17th percentile"),
+        ("med", "Median (50th)"),
+        ("hi",  "83rd percentile"),
+        ("vhi", "95th percentile"),
+    ]
+
+    wf_sel    = Select(title="Workflow:",   value=default_wf,    options=wf_opts,   width=240)
+    comp_sel  = Select(title="Component:",  value=default_comp,  options=comp_opts, width=180)
+    scale_sel = Select(
+        title="Scale:", value=default_scale,
+        options=[("local", "Local RSL"), ("global", "Global Mean SL")], width=160,
+    )
+    year_sel  = Select(title="Year:",       value=default_year_str, options=year_opts, width=120)
+    q_sel     = Select(title="Quantile:",   value="med",          options=q_opts,    width=180)
+
+    # -- CustomJS callback --
+    Q_LABELS_JS = {v: lbl for v, lbl in q_opts}
+
+    JS_BAR = """
+    const wf    = wf_sel.value;
+    const comp  = comp_sel.value;
+    const scale = scale_sel.value;
+    const year  = parseInt(year_sel.value);
+    const q_key = q_sel.value;
+
+    const xs = [], ys = [], colors = [], ssp_labels = [];
+    const loc_names = [], loc_ids = [], loc_lat = [], loc_lon = [];
+
+    for (let li = 0; li < n_locs; li++) {
+        const loc_id = (scale === "global") ? -1 : loc_ids_arr[li];
+        for (let si = 0; si < plot_ssps.length; si++) {
+            const ssp = plot_ssps[si];
+            const x   = li * group_step + si * bar_w - half_group + bar_w / 2.0;
+            const key = ssp + "|" + comp + "|" + wf + "|" + scale + "|" + loc_id;
+            const d   = data_dict[key];
+            let   val = 0.0;
+            if (d) {
+                const idx = d.years.indexOf(year);
+                if (idx !== -1 && d[q_key] !== undefined) val = d[q_key][idx];
+            }
+            xs.push(x);
+            ys.push(val);
+            colors.push(ssp_color_map[ssp]);
+            ssp_labels.push(ssp_label_map[ssp] || ssp);
+            loc_names.push(loc_names_arr[li]);
+            loc_ids.push(String(loc_ids_arr[li]));
+            loc_lat.push(loc_lat_arr[li]);
+            loc_lon.push(loc_lon_arr[li]);
+        }
+    }
+
+    source_bar.data = {
+        x: xs, y: ys, colors: colors, ssp_labels: ssp_labels,
+        loc_names: loc_names, loc_ids: loc_ids,
+        loc_lat: loc_lat, loc_lon: loc_lon,
+    };
+    source_bar.change.emit();
+
+    const q_label = q_label_map[q_key] || q_key;
+    p_bar.title.text = "RSL Projections at " + year +
+        " — SSP Comparison per Tide Gauge" +
+        "  (" + wf + ", " + comp + ", " + scale + ", " + q_label + ")";
+    """
+
+    cb = CustomJS(
+        args=dict(
+            source_bar  = source_bar,
+            data_dict   = data_dict,
+            p_bar       = p_bar,
+            wf_sel      = wf_sel,
+            comp_sel    = comp_sel,
+            scale_sel   = scale_sel,
+            year_sel    = year_sel,
+            q_sel       = q_sel,
+            plot_ssps   = plot_ssps,
+            loc_ids_arr = loc_ids,
+            loc_names_arr = loc_names,
+            loc_lat_arr = loc_lat,
+            loc_lon_arr = loc_lon,
+            n_locs      = n_locs,
+            bar_w       = bar_w,
+            group_step  = group_step,
+            half_group  = half_group,
+            ssp_color_map  = {s: SSP_COLORS.get(s, _FALLBACK_COLORS[i % len(_FALLBACK_COLORS)])
+                              for i, s in enumerate(plot_ssps)},
+            ssp_label_map  = {s: SSP_LABELS.get(s, s) for s in plot_ssps},
+            q_label_map    = Q_LABELS_JS,
+        ),
+        code=JS_BAR,
+    )
+    wf_sel.js_on_change("value",    cb)
+    comp_sel.js_on_change("value",  cb)
+    scale_sel.js_on_change("value", cb)
+    year_sel.js_on_change("value",  cb)
+    q_sel.js_on_change("value",     cb)
+
+    bar_head = Div(text="""
+<div style="margin-top:32px;margin-bottom:6px;">
+  <u>FACTS <b>sea-level projections — SSP comparison</b></u> (GROUPED BAR CHART)<br>
+  Each group = one tide gauge location. Bars within each group = SSP scenarios side by side.<br>
+  Select <b>workflow</b>, <b>component</b>, <b>scale</b>, <b>year</b>, and <b>quantile</b>.
+  Hover over any bar for location details and RSL value (mm).
+  Click legend items to show/hide individual scenarios.
+</div>
+""", width=1200)
+
+    return column(bar_head, row(wf_sel, comp_sel, scale_sel, year_sel, q_sel), p_bar)
+
+
 def wf_to_ssp_key(comp, wf, scale, loc):
     """
     Dead stub — not called at runtime.
@@ -1402,6 +1692,11 @@ def build_dashboard(
 </div>
 """, width=900)
 
+    # ── STACKED BAR section ────────────────────────────────
+    stacked_bar_section = _build_stacked_bar_section(
+        data_dict, years, ssps, wfs, loc_options_all, location_meta_js,
+    )
+
     # ── TABLE section ──────────────────────────────────────
     comp_table_section = _build_component_table_section(
         data_dict, years, ssps, wfs, loc_options_all, location_meta_js,
@@ -1409,6 +1704,7 @@ def build_dashboard(
 
     dashboard = column(
         desc_head, controls_block, p, text_legend,
+        stacked_bar_section,
         comp_table_section,
         citation,
     )

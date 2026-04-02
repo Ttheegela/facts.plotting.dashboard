@@ -168,6 +168,8 @@ Missing files are skipped gracefully — partial runs are supported.
 - **SSP curves** — SSP126/245/370/585 shown simultaneously for comparison
 - **Year / Y-axis range sliders** — zoom into any period or sea-level range
 - **Visibility checkboxes** — toggle individual lines on/off
+- **Grouped bar chart** — SSP scenarios compared side by side per tide gauge station (not stacked — SSPs are alternative scenarios, not additive)
+- **Quantile selector** — bar chart shows any of: 5th, 17th, median (50th), 83rd, or 95th percentile
 
 ---
 
@@ -217,6 +219,8 @@ bash docker/run.sh --exp-root /path/to/your/experiment/
 ---
 
 ## Version
+
+`v1.1.1` — Grouped bar chart replacing stacked bars; quantile selector (5th/17th/50th/83rd/95th) for bar chart.
 
 `v1.0.0` — Initial release supporting workflows wf1e–wf4, SSP126/245/370/585,
 global and local RSL, Indian Ocean tide gauge locations.
