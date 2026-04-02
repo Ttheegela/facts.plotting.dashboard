@@ -4,7 +4,7 @@ Generate an interactive, self-contained HTML dashboard from [FACTS](https://gith
 No FACTS installation required — just Docker (or Python ≥ 3.9).
 The output is a **single `.html` file** you can open in any browser — no web server, no internet connection required.
 
-> **Example dashboards:** [v1.0.0](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.0.0) · [v1.1.0](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.0) · [v1.1.1](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.1) · [v1.1.2](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.2)
+> **Example dashboards:** [v1.0.0](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.0.0) · [v1.1.0](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.0) · [v1.1.1](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.1) · [v1.1.2](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.2) · [v1.1.3](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.3)
 
 ---
 
@@ -219,6 +219,8 @@ bash docker/run.sh --exp-root /path/to/your/experiment/
 ---
 
 ## Version
+
+`v1.1.3` — UX polish: human-readable component labels in dropdowns; "Line N" row labels replacing repetitive per-widget "(Line N)" titles; corrected SSP colour legend to match actual hex codes; removed placeholder text from header.
 
 `v1.1.2` — IPCC AR6-standard SSP color scheme (cool-to-warm blue→red gradient); HTML weight reduced from 168 MB to 66 MB by rounding projection values to 1 decimal place (mm precision).
 
