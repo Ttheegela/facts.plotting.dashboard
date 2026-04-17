@@ -73,6 +73,7 @@ DASHBOARD FEATURES
 
 import argparse
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -496,6 +497,164 @@ def _store_result(data_dict, location_meta, result, key_prefix):
                 "lat": _safe_coord(lats, li),
                 "lon": _safe_coord(lons, li),
             }
+
+
+def _infer_component_from_stem(stem: str) -> str:
+    """
+    Extract the sea-level component from a FACTS .nc filename stem.
+
+    File pattern: coupling.sspXXX.module.model.COMPONENT_{scale}sl
+    The component token sits immediately before _{scale}sl at the end.
+
+    Matches against known component names first; falls back to the raw token.
+    """
+    last = stem.split(".")[-1]                       # e.g. "GrIS_globalsl"
+    for suffix in ("_globalsl", "_localsl", "_global", "_local"):
+        if last.lower().endswith(suffix):
+            raw = last[: len(last) - len(suffix)]    # e.g. "GrIS"
+            break
+    else:
+        raw = last
+
+    # Normalise: strip sub-component prefix (e.g. "icesheets_AIS" → "AIS")
+    for k in ("total", "AIS", "GrIS", "glaciers", "sterodynamics",
+              "landwaterstorage", "vlm", "verticallandmotion"):
+        if k.lower() in raw.lower():
+            # Map known aliases
+            return {
+                "verticallandmotion": "vlm",
+                "icesheets_AIS": "AIS", "icesheets_GIS": "GrIS",
+                "GIS": "GrIS",
+            }.get(raw, k)
+    return raw   # unknown component — use as-is
+
+
+def _infer_wf_from_stem(stem: str) -> str:
+    """
+    Heuristically map a FACTS filename stem to the closest known workflow ID.
+
+    Uses the model/module tokens in the filename.  The mapping is approximate
+    for multi-model workflows (wf2e/wf3e share emulandice for GrIS).
+    """
+    s = stem.lower()
+    if "bamber19" in s:
+        return "wf4"
+    if "deconto21" in s:
+        return "wf3e"
+    if "larmip" in s:
+        return "wf2e"
+    if "fittedismip" in s:
+        return "wf1f"
+    if "ipccar5" in s:
+        return "wf1f"
+    # emulandice is used by wf1e, wf2e, wf3e — default to wf1e
+    return "wf1e"
+
+
+def load_single_nc(nc_path: Path) -> dict:
+    """
+    Load a single FACTS .nc file and return structures compatible with build_dashboard().
+
+    Infers SSP, component, workflow, and scale from the filename, reads all
+    tide gauge (or global) time series, computes 5 quantiles, and searches the
+    file's parent and grandparent directories for a companion location.lst.
+
+    Returns:
+        dict with keys: data_dict, years, locations, location_meta, ssps, wfs
+
+    Example:
+        result = load_single_nc(Path("coupling.ssp585.emuGrIS.emulandice.GrIS_globalsl.nc"))
+        build_dashboard(result["data_dict"], result["years"], result["locations"], ...)
+    """
+    stem  = nc_path.stem
+    parts = stem.split(".")
+
+    # ── Parse filename ───────────────────────────────────────
+    ssp   = next((p for p in parts if re.match(r"ssp\d+", p, re.IGNORECASE)), "ssp_unknown")
+    scale = "global" if "global" in stem.lower() else "local"
+    comp  = _infer_component_from_stem(stem)
+    wf    = _infer_wf_from_stem(stem)
+
+    log.info("[single-nc] file      : %s", nc_path.name)
+    log.info("[single-nc] SSP=%s  component=%s  workflow=%s  scale=%s", ssp, comp, wf, scale)
+
+    # Register the component if it is not already known (affects dropdowns)
+    if comp not in COMPONENT_LABELS:
+        COMPONENT_LABELS[comp] = comp
+    if comp not in COMPONENTS:
+        COMPONENTS.append(comp)
+
+    # ── Quantiles ────────────────────────────────────────────
+    result  = compute_quantiles(nc_path)
+    years   = result["years"]
+    loc_ids = result["locations"]      # list of int location IDs from the file
+    lats    = result["lat"]
+    lons    = result["lon"]
+    q       = result["q"]              # (5, n_years, n_locs)
+
+    # ── Location list from companion location.lst ────────────
+    loc_meta_from_lst: dict = {}
+    for search_dir in (nc_path.parent, nc_path.parent.parent):
+        lst = search_dir / "location.lst"
+        if lst.exists():
+            try:
+                df = pd.read_csv(lst, sep=r"\s+", header=None, names=["name", "id", "lat", "lon"])
+                loc_meta_from_lst = {int(row["id"]): row for _, row in df.iterrows()}
+                log.info("[single-nc] Loaded location.lst from %s (%d locations)", lst, len(df))
+            except Exception as exc:
+                log.warning("[single-nc] Could not read %s: %s", lst, exc)
+            break
+
+    # ── Build data_dict, locations, location_meta ────────────
+    def _r1(arr):
+        return [round(float(v), 1) for v in arr]
+
+    data_dict:     dict = {}
+    locations:     list = []
+    location_meta: dict = {}
+
+    for li, raw_lid in enumerate(loc_ids):
+        loc_id = int(raw_lid)
+
+        if loc_id in loc_meta_from_lst:
+            row  = loc_meta_from_lst[loc_id]
+            name = str(row["name"])
+            lat  = float(row["lat"])
+            lon  = float(row["lon"])
+        else:
+            # -1 is the conventional FACTS global-mean location ID
+            name = "Global mean" if loc_id == -1 else f"Location {loc_id}"
+            lat  = float(lats[li]) if li < len(lats) else None
+            lon  = float(lons[li]) if li < len(lons) else None
+
+        def _safe(v):
+            try:
+                return None if (v is None or np.isnan(v) or np.isinf(v)) else v
+            except (TypeError, ValueError):
+                return None
+
+        locations.append({"name": name, "id": loc_id, "lat": lat, "lon": lon})
+        location_meta[loc_id] = {"lat": _safe(lat), "lon": _safe(lon)}
+
+        key = f"{ssp}|{comp}|{wf}|{scale}|{loc_id}"
+        data_dict[key] = {
+            "years": years,
+            "vlo":   _r1(q[0, :, li]),
+            "lo":    _r1(q[1, :, li]),
+            "med":   _r1(q[2, :, li]),
+            "hi":    _r1(q[3, :, li]),
+            "vhi":   _r1(q[4, :, li]),
+        }
+
+    log.info("[single-nc] Loaded %d location(s), %d time steps", len(loc_ids), len(years))
+    return {
+        "data_dict":     data_dict,
+        "years":         years,
+        "locations":     locations,
+        "location_meta": location_meta,
+        "ssps":          [ssp],
+        "wfs":           [wf],
+    }
 
 
 def precompute_all(entries: list, wfs: list) -> tuple:
@@ -1916,10 +2075,19 @@ examples:
             "Repeat for each SSP: --ssp-dir /run1/coupling.ssp126/ --ssp-dir /run2/coupling.ssp585/"
         ),
     )
+    parser.add_argument(
+        "--single-nc-file", type=Path, default=None, metavar="FILE",
+        help=(
+            "Path to a single FACTS .nc file (sea_level_change variable). "
+            "SSP, component, workflow, and scale are auto-detected from the filename. "
+            "Produces the same full dashboard (line plot, bar chart, component table) "
+            "from a single file rather than a full experiment tree."
+        ),
+    )
     parser.add_argument("--output", type=Path, default=None, metavar="FILE",
                         help="Output HTML path (default: facts_dashboard.html next to exp-root)")
-    parser.add_argument("--title", default="FACTS Sea-Level Projections",
-                        help="Dashboard title shown in the header")
+    parser.add_argument("--title", default=None,
+                        help="Dashboard title shown in the header (auto-generated if omitted)")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable DEBUG-level logging")
     args = parser.parse_args()
@@ -1927,8 +2095,39 @@ examples:
     if args.verbose:
         log.setLevel(logging.DEBUG)
 
+    # ── Single NC file mode ──────────────────────────────────
+    if args.single_nc_file:
+        nc_path = args.single_nc_file.resolve()
+        if not nc_path.exists():
+            log.error("--single-nc-file not found: %s", nc_path)
+            sys.exit(1)
+
+        default_out = nc_path.parent / "facts_dashboard.html"
+        output_path = (args.output or default_out).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        log.info("FACTS Dashboard Generator — single NC file mode")
+        log.info("  nc-file  : %s", nc_path)
+        log.info("  output   : %s", output_path)
+
+        result = load_single_nc(nc_path)
+        title  = args.title or f"FACTS — {nc_path.stem}"
+
+        log.info("Year span : %s – %s  (%d time steps)",
+                 result["years"][0], result["years"][-1], len(result["years"]))
+        log.info("Building Bokeh dashboard ...")
+        build_dashboard(
+            result["data_dict"], result["years"],
+            result["locations"], result["location_meta"],
+            result["ssps"], result["wfs"],
+            output_path, title=title,
+        )
+        log.info("Done.")
+        return
+
+    # ── Multi-file / experiment-tree mode ────────────────────
     if not args.exp_root and not args.ssp_dirs:
-        parser.error("Provide at least one of --exp-root or --ssp-dir")
+        parser.error("Provide at least one of --exp-root, --ssp-dir, or --single-nc-file")
 
     exp_root = args.exp_root.resolve() if args.exp_root else None
     if exp_root and not exp_root.is_dir():
@@ -1971,9 +2170,10 @@ examples:
         log.error("No data could be loaded from any .nc file.")
         sys.exit(1)
 
+    title = args.title or "FACTS Sea-Level Projections"
     log.info("Year span : %s – %s  (%d time steps)", years[0], years[-1], len(years))
     log.info("Building Bokeh dashboard ...")
-    build_dashboard(data_dict, years, locations, location_meta, ssps, wfs, output_path, title=args.title)
+    build_dashboard(data_dict, years, locations, location_meta, ssps, wfs, output_path, title=title)
     log.info("Done.")
 
 
