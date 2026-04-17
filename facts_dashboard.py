@@ -84,8 +84,8 @@ import xarray as xr            # reads NetCDF4 files as labelled arrays
 from bokeh.io import save
 from bokeh.layouts import column, row
 from bokeh.models import (
-    Checkbox, ColumnDataSource, CustomJS, DataTable, Div,
-    HTMLTemplateFormatter, HoverTool, Range1d, RangeSlider, Select, TableColumn,
+    Checkbox, CheckboxGroup, ColumnDataSource, CustomJS, DataTable, Div,
+    FixedTicker, HTMLTemplateFormatter, HoverTool, Range1d, RangeSlider, Select, TableColumn,
 )
 from bokeh.plotting import figure
 from bokeh.resources import INLINE   # embeds all JS/CSS inline so the HTML is self-contained
@@ -235,6 +235,9 @@ XMIN_FIXED = 2020
 XMAX_FIXED = 2300
 YMIN_FIXED = -500
 YMAX_FIXED = 6000
+
+# Bar chart: max locations to show by default (Bob: "fewer tide gauges for better comparison")
+BAR_DEFAULT_N_LOCS = 8
 
 # ─────────────────────────────────────────────────────────
 # Discovery helpers
@@ -1059,8 +1062,9 @@ def _build_stacked_bar_section(
     plot_ssps = [s for s in SSP_ORDER if s in ssps] + [s for s in ssps if s not in SSP_ORDER]
     n_ssps    = len(plot_ssps)
 
-    # -- Local locations only --
+    # -- Local locations only (limit to BAR_DEFAULT_N_LOCS for visual clarity) --
     local_locs = [(lid, lbl) for lid, lbl in loc_options_all if int(lid) >= 0]
+    local_locs = local_locs[:BAR_DEFAULT_N_LOCS]
     loc_ids    = [int(lid) for lid, _ in local_locs]
     loc_names  = [
         location_meta_js.get(str(lid), {}).get("name", str(lid))
@@ -1162,8 +1166,9 @@ def _build_stacked_bar_section(
     p_bar.vbar(x="x", top="y", width=bar_w * 0.9, color="colors",
                source=source_bar, line_color="white", line_width=0.5)
 
-    # x-axis: one tick per location group, labelled with location name
-    p_bar.xaxis.ticker = group_centers
+    # x-axis: FixedTicker so JS can update ticks dynamically when SSPs are filtered
+    x_ticker = FixedTicker(ticks=group_centers)
+    p_bar.xaxis.ticker = x_ticker
     p_bar.xaxis.major_label_overrides = {c: loc_names[i] for i, c in enumerate(group_centers)}
     p_bar.xaxis.major_label_orientation = 1.0
 
@@ -1201,6 +1206,13 @@ def _build_stacked_bar_section(
     year_sel  = Select(title="Year:",       value=default_year_str, options=year_opts, width=120)
     q_sel     = Select(title="Quantile:",   value="med",          options=q_opts,    width=180)
 
+    # -- SSP CheckboxGroup: user picks which SSPs to display --
+    chk_ssp = CheckboxGroup(
+        labels=[SSP_LABELS.get(s, s) for s in plot_ssps],
+        active=list(range(n_ssps)),
+        width=600,
+    )
+
     # -- CustomJS callback --
     Q_LABELS_JS = {v: lbl for v, lbl in q_opts}
 
@@ -1211,14 +1223,32 @@ def _build_stacked_bar_section(
     const year  = parseInt(year_sel.value);
     const q_key = q_sel.value;
 
+    // Filter SSPs based on checkbox selection
+    const active_set = new Set(chk_ssp.active);
+    const active_ssps = plot_ssps.filter((_, i) => active_set.has(i));
+    const n_active = active_ssps.length;
+
     const xs = [], ys = [], colors = [], ssp_labels = [];
-    const loc_names = [], loc_ids = [], loc_lat = [], loc_lon = [];
+    const loc_names_out = [], loc_ids_out = [], loc_lat_out = [], loc_lon_out = [];
+
+    if (n_active === 0) {
+        source_bar.data = {
+            x: [], y: [], colors: [], ssp_labels: [],
+            loc_names: [], loc_ids: [], loc_lat: [], loc_lon: [],
+        };
+        source_bar.change.emit();
+        return;
+    }
+
+    // Recompute geometry based on how many SSPs are active
+    const new_group_step = n_active * bar_w + gap;
+    const new_half_group = (n_active * bar_w) / 2.0;
 
     for (let li = 0; li < n_locs; li++) {
         const loc_id = (scale === "global") ? -1 : loc_ids_arr[li];
-        for (let si = 0; si < plot_ssps.length; si++) {
-            const ssp = plot_ssps[si];
-            const x   = li * group_step + si * bar_w - half_group + bar_w / 2.0;
+        for (let si = 0; si < n_active; si++) {
+            const ssp = active_ssps[si];
+            const x   = li * new_group_step + si * bar_w - new_half_group + bar_w / 2.0;
             const key = ssp + "|" + comp + "|" + wf + "|" + scale + "|" + loc_id;
             const d   = data_dict[key];
             let   val = 0.0;
@@ -1230,19 +1260,34 @@ def _build_stacked_bar_section(
             ys.push(val);
             colors.push(ssp_color_map[ssp]);
             ssp_labels.push(ssp_label_map[ssp] || ssp);
-            loc_names.push(loc_names_arr[li]);
-            loc_ids.push(String(loc_ids_arr[li]));
-            loc_lat.push(loc_lat_arr[li]);
-            loc_lon.push(loc_lon_arr[li]);
+            loc_names_out.push(loc_names_arr[li]);
+            loc_ids_out.push(String(loc_ids_arr[li]));
+            loc_lat_out.push(loc_lat_arr[li]);
+            loc_lon_out.push(loc_lon_arr[li]);
         }
     }
 
     source_bar.data = {
         x: xs, y: ys, colors: colors, ssp_labels: ssp_labels,
-        loc_names: loc_names, loc_ids: loc_ids,
-        loc_lat: loc_lat, loc_lon: loc_lon,
+        loc_names: loc_names_out, loc_ids: loc_ids_out,
+        loc_lat: loc_lat_out, loc_lon: loc_lon_out,
     };
     source_bar.change.emit();
+
+    // Update x-axis ticks and labels to match new group centers
+    const new_centers = [];
+    const new_overrides = {};
+    for (let li = 0; li < n_locs; li++) {
+        const c = li * new_group_step;
+        new_centers.push(c);
+        new_overrides[c] = loc_names_arr[li];
+    }
+    x_ticker.ticks = new_centers;
+    p_bar.xaxis[0].major_label_overrides = new_overrides;
+
+    // Update x_range to fit new width
+    p_bar.x_range.start = -new_group_step * 0.3;
+    p_bar.x_range.end   = n_locs * new_group_step - gap / 2.0;
 
     const q_label = q_label_map[q_key] || q_key;
     p_bar.title.text = "RSL Projections at " + year +
@@ -1252,27 +1297,28 @@ def _build_stacked_bar_section(
 
     cb = CustomJS(
         args=dict(
-            source_bar  = source_bar,
-            data_dict   = data_dict,
-            p_bar       = p_bar,
-            wf_sel      = wf_sel,
-            comp_sel    = comp_sel,
-            scale_sel   = scale_sel,
-            year_sel    = year_sel,
-            q_sel       = q_sel,
-            plot_ssps   = plot_ssps,
-            loc_ids_arr = loc_ids,
+            source_bar    = source_bar,
+            data_dict     = data_dict,
+            p_bar         = p_bar,
+            wf_sel        = wf_sel,
+            comp_sel      = comp_sel,
+            scale_sel     = scale_sel,
+            year_sel      = year_sel,
+            q_sel         = q_sel,
+            chk_ssp       = chk_ssp,
+            x_ticker      = x_ticker,
+            plot_ssps     = plot_ssps,
+            loc_ids_arr   = loc_ids,
             loc_names_arr = loc_names,
-            loc_lat_arr = loc_lat,
-            loc_lon_arr = loc_lon,
-            n_locs      = n_locs,
-            bar_w       = bar_w,
-            group_step  = group_step,
-            half_group  = half_group,
-            ssp_color_map  = {s: SSP_COLORS.get(s, _FALLBACK_COLORS[i % len(_FALLBACK_COLORS)])
-                              for i, s in enumerate(plot_ssps)},
-            ssp_label_map  = {s: SSP_LABELS.get(s, s) for s in plot_ssps},
-            q_label_map    = Q_LABELS_JS,
+            loc_lat_arr   = loc_lat,
+            loc_lon_arr   = loc_lon,
+            n_locs        = n_locs,
+            bar_w         = bar_w,
+            gap           = gap,
+            ssp_color_map = {s: SSP_COLORS.get(s, _FALLBACK_COLORS[i % len(_FALLBACK_COLORS)])
+                             for i, s in enumerate(plot_ssps)},
+            ssp_label_map = {s: SSP_LABELS.get(s, s) for s in plot_ssps},
+            q_label_map   = Q_LABELS_JS,
         ),
         code=JS_BAR,
     )
@@ -1281,18 +1327,55 @@ def _build_stacked_bar_section(
     scale_sel.js_on_change("value", cb)
     year_sel.js_on_change("value",  cb)
     q_sel.js_on_change("value",     cb)
+    chk_ssp.js_on_change("active",  cb)
+
+    # -- Y-axis range slider (same pattern as line plot section) --
+    bar_ys = [v for v in init_data["y"] if v is not None]
+    bar_ymin = float(min(bar_ys)) if bar_ys else YMIN_FIXED
+    bar_ymax = float(max(bar_ys)) if bar_ys else YMAX_FIXED
+    bar_pad  = max(50.0, 0.05 * (bar_ymax - bar_ymin))
+    bar_y_init_min = max(YMIN_FIXED, bar_ymin - bar_pad)
+    bar_y_init_max = min(YMAX_FIXED, bar_ymax + bar_pad)
+    bar_y_step = max(1.0, round((bar_y_init_max - bar_y_init_min) / 100, 1))
+
+    p_bar.y_range = Range1d(bar_y_init_min, bar_y_init_max)
+
+    y_bar_slider = RangeSlider(
+        title="Y range (mm)",
+        start=YMIN_FIXED, end=YMAX_FIXED,
+        value=(bar_y_init_min, bar_y_init_max),
+        step=bar_y_step, width=600,
+    )
+    y_bar_slider.js_on_change("value", CustomJS(
+        args=dict(p=p_bar, s=y_bar_slider),
+        code="""
+        p.y_range.start = Math.max(s.start, s.value[0]);
+        p.y_range.end   = Math.min(s.end,   s.value[1]);
+        """,
+    ))
+
+    ssp_chk_label = Div(
+        text="<b style='font-size:12px;'>SSP scenarios:</b>",
+        width=130,
+        styles={"padding-top": "6px"},
+    )
 
     bar_head = Div(text="""
 <div style="margin-top:32px;margin-bottom:6px;">
   <u>FACTS <b>sea-level projections — SSP comparison</b></u> (GROUPED BAR CHART)<br>
-  Each group = one tide gauge location. Bars within each group = SSP scenarios side by side.<br>
-  Select <b>workflow</b>, <b>component</b>, <b>scale</b>, <b>year</b>, and <b>quantile</b>.
+  Each group = one tide gauge location. Bars within each group = selected SSP scenarios.<br>
+  Select <b>workflow</b>, <b>component</b>, <b>scale</b>, <b>year</b>, <b>quantile</b>, and <b>SSP scenarios</b>.
   Hover over any bar for location details and RSL value (mm).
-  Click legend items to show/hide individual scenarios.
 </div>
 """, width=1200)
 
-    return column(bar_head, row(wf_sel, comp_sel, scale_sel, year_sel, q_sel), p_bar)
+    return column(
+        bar_head,
+        row(wf_sel, comp_sel, scale_sel, year_sel, q_sel),
+        row(ssp_chk_label, chk_ssp),
+        y_bar_slider,
+        p_bar,
+    )
 
 
 def wf_to_ssp_key(comp, wf, scale, loc):
@@ -1400,10 +1483,10 @@ def build_dashboard(
     # ── Y range from data ──────────────────────────────────
     all_lo = [v for d in data_dict.values() for v in d["lo"] if v is not None]
     all_hi = [v for d in data_dict.values() for v in d["hi"] if v is not None]
-    ymin_data   = float(min(all_lo)) if all_lo else YMIN_FIXED
     ymax_data   = float(max(all_hi)) if all_hi else YMAX_FIXED
-    y_pad       = 0.05 * (ymax_data - ymin_data)
-    y_init_min  = max(YMIN_FIXED, ymin_data - y_pad)
+    y_pad       = 0.05 * ymax_data
+    # y_init_min fixed at 0 so screenshots are comparable across SSPs/datasets
+    y_init_min  = 0.0
     y_init_max  = min(YMAX_FIXED, ymax_data + y_pad)
     x_init_min  = float(min(years)) if years else XMIN_FIXED
     x_init_max  = float(max(years)) if years else XMAX_FIXED
@@ -1508,6 +1591,16 @@ def build_dashboard(
             "loc_info": loc_info_div, "chk": chk, "row_label": row_label,
         })
 
+    # ── Global quantile selector for line plot ─────────────
+    q_line_opts = [
+        ("med", "Median (p50)"),
+        ("vlo", "5th percentile"),
+        ("lo",  "17th percentile"),
+        ("hi",  "83rd percentile"),
+        ("vhi", "95th percentile"),
+    ]
+    q_line_sel = Select(title="Line quantile:", value="med", options=q_line_opts, width=200)
+
     # ── CustomJS callbacks ─────────────────────────────────
     # JS_UPDATE fires when any selector (workflow, SSP, component, scale, location) changes.
     # Key format must match Python's _store_result: "{ssp}|{comp}|{wf}|{scale}|{loc_id}"
@@ -1526,7 +1619,9 @@ def build_dashboard(
         band.visible = r_solid.visible = r_dashed.visible = r_dotted.visible =
         r_circle.visible = r_diamond.visible = r_asterisk.visible = r_triangle.visible = false;
     } else {
-        source.data = { years: d.years, med: d.med, lo: d.lo, hi: d.hi };
+        const q_key = q_line_sel.value;
+        const center = (d[q_key] !== undefined) ? d[q_key] : d.med;
+        source.data = { years: d.years, med: center, lo: d.lo, hi: d.hi };
         source.change.emit();
 
         // Colour from SSP
@@ -1617,12 +1712,14 @@ def build_dashboard(
             style_preview_map=style_preview_map_js,
             loc_info=sw["loc_info"],
             location_meta=location_meta_js,
+            q_line_sel=q_line_sel,
         )
         cb_update = CustomJS(args=common, code=JS_UPDATE)
         cb_vis    = CustomJS(args=common, code=JS_VISIBILITY)
 
         for sel in (sw["wf"], sw["ssp"], sw["comp"], sw["scale"], sw["loc"]):
             sel.js_on_change("value", cb_update)
+        q_line_sel.js_on_change("value", cb_update)
         sw["chk"].js_on_change("active", cb_vis)
 
     # ── X / Y range sliders ────────────────────────────────
@@ -1658,7 +1755,7 @@ def build_dashboard(
             sw["scale"],
             sw["loc"], sw["loc_info"], sw["chk"],
         ))
-    controls_block = column(*ctrl_rows, x_slider, y_slider)
+    controls_block = column(*ctrl_rows, row(q_line_sel), x_slider, y_slider)
 
     # ── Header ─────────────────────────────────────────────
     desc_head = Div(text=f"""
