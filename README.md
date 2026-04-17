@@ -4,7 +4,7 @@ Generate an interactive, self-contained HTML dashboard from [FACTS](https://gith
 No FACTS installation required — just Docker (or Python ≥ 3.9).
 The output is a **single `.html` file** you can open in any browser — no web server, no internet connection required.
 
-> **Example dashboards:** [v1.0.0](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.0.0) · [v1.1.0](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.0) · [v1.1.1](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.1) · [v1.1.2](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.2) · [v1.1.3](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.3)
+> **Example dashboards:** [v1.0.0](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.0.0) · [v1.1.0](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.0) · [v1.1.1](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.1) · [v1.1.2](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.2) · [v1.1.3](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.3) · [v1.1.4](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.4)
 
 ---
 
@@ -170,6 +170,8 @@ Missing files are skipped gracefully — partial runs are supported.
 - **Visibility checkboxes** — toggle individual lines on/off
 - **Grouped bar chart** — SSP scenarios compared side by side per tide gauge station (not stacked — SSPs are alternative scenarios, not additive)
 - **Quantile selector** — bar chart shows any of: 5th, 17th, median (50th), 83rd, or 95th percentile
+- **Location dropdown** — toggle-button reveals a checklist of all tide gauge stations; tick any combination to show only those on the bar chart
+- **Line quantile selector** — choose which percentile the solid projection line displays (p5/p17/p50/p83/p95)
 
 ---
 
@@ -219,6 +221,8 @@ bash docker/run.sh --exp-root /path/to/your/experiment/
 ---
 
 ## Version
+
+`v1.1.4` — Location toggle-dropdown for bar chart (native Bokeh Toggle + CheckboxGroup, multi-select); line plot y-axis fixed at 0 for cross-run comparability; global line quantile selector (p5/p17/p50/p83/p95); bar chart SSP checkbox selector; bar chart Y-axis range slider; x-axis label reactive fix via CustomJSTickFormatter + ColumnDataSource.
 
 `v1.1.3` — UX polish: human-readable component labels in dropdowns; "Line N" row labels replacing repetitive per-widget "(Line N)" titles; corrected SSP colour legend to match actual hex codes; removed placeholder text from header.
 
