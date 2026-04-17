@@ -551,16 +551,70 @@ def _infer_wf_from_stem(stem: str) -> str:
     return "wf1e"
 
 
+def _find_best_location_lst(nc_path: Path, loc_ids_in_file: list) -> dict:
+    """
+    Find the location.lst that covers the most location IDs present in the NC file.
+
+    Searches:
+      1. nc_path.parent         (same folder as the file)
+      2. nc_path.parent.parent  (e.g. coupling.ssp585/)
+      3. All coupling.ssp* sibling directories one level up (exp_root level)
+
+    Picks the file with the most ID matches against loc_ids_in_file.
+    This handles the case where the file's own SSP directory has a partial
+    location.lst (e.g. only 1 station) while a sibling SSP directory has the
+    full 24-station list.
+
+    Returns:
+        {int(loc_id): pandas row} for the best-matching file, or {} if none found.
+    """
+    target_ids = set(int(x) for x in loc_ids_in_file)
+    candidates = []
+
+    search_dirs = [nc_path.parent, nc_path.parent.parent]
+    # Also scan all sibling coupling.ssp* directories at exp_root level
+    exp_root_candidate = nc_path.parent.parent.parent
+    if exp_root_candidate.is_dir():
+        for sibling in sorted(exp_root_candidate.iterdir()):
+            if sibling.is_dir() and sibling.name.startswith("coupling.ssp"):
+                search_dirs.append(sibling)
+
+    for d in search_dirs:
+        lst = d / "location.lst"
+        if not lst.exists():
+            continue
+        try:
+            df = pd.read_csv(lst, sep=r"\s+", header=None, names=["name", "id", "lat", "lon"])
+            matched = len(set(int(x) for x in df["id"]) & target_ids)
+            candidates.append((matched, lst, df))
+        except Exception:
+            pass
+
+    if not candidates:
+        return {}
+
+    # Pick the candidate with the most matching IDs
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    best_match, best_lst, best_df = candidates[0]
+    log.info("[single-nc] location.lst: %s  (%d / %d IDs matched)",
+             best_lst, best_match, len(target_ids))
+    return {int(row["id"]): row for _, row in best_df.iterrows()}
+
+
 def load_single_nc(nc_path: Path) -> dict:
     """
     Load a single FACTS .nc file and return structures compatible with build_dashboard().
 
     Infers SSP, component, workflow, and scale from the filename, reads all
-    tide gauge (or global) time series, computes 5 quantiles, and searches the
-    file's parent and grandparent directories for a companion location.lst.
+    tide gauge (or global) time series, computes 5 quantiles, and finds the
+    best-matching location.lst by scanning sibling SSP directories.
+
+    The COMPONENTS and COMPONENT_LABELS globals are narrowed to only the
+    detected component so that all dashboard dropdowns and the component table
+    only show the data that is actually present in the file.
 
     Returns:
-        dict with keys: data_dict, years, locations, location_meta, ssps, wfs
+        dict with keys: data_dict, years, locations, location_meta, ssps, wfs, comp
 
     Example:
         result = load_single_nc(Path("coupling.ssp585.emuGrIS.emulandice.GrIS_globalsl.nc"))
@@ -578,36 +632,34 @@ def load_single_nc(nc_path: Path) -> dict:
     log.info("[single-nc] file      : %s", nc_path.name)
     log.info("[single-nc] SSP=%s  component=%s  workflow=%s  scale=%s", ssp, comp, wf, scale)
 
-    # Register the component if it is not already known (affects dropdowns)
-    if comp not in COMPONENT_LABELS:
-        COMPONENT_LABELS[comp] = comp
-    if comp not in COMPONENTS:
-        COMPONENTS.append(comp)
+    # ── Narrow global COMPONENTS to only what this file provides ──
+    # This fixes the component table and all dropdowns showing all 7 components
+    # when only 1 has data.
+    label = COMPONENT_LABELS.get(comp, comp)
+    COMPONENTS[:] = [comp]            # in-place so all references see the change
+    COMPONENT_LABELS.clear()
+    COMPONENT_LABELS[comp] = label
 
     # ── Quantiles ────────────────────────────────────────────
     result  = compute_quantiles(nc_path)
     years   = result["years"]
-    loc_ids = result["locations"]      # list of int location IDs from the file
+    loc_ids = result["locations"]     # list of int location IDs from the file
     lats    = result["lat"]
     lons    = result["lon"]
-    q       = result["q"]              # (5, n_years, n_locs)
+    q       = result["q"]             # (5, n_years, n_locs)
 
-    # ── Location list from companion location.lst ────────────
-    loc_meta_from_lst: dict = {}
-    for search_dir in (nc_path.parent, nc_path.parent.parent):
-        lst = search_dir / "location.lst"
-        if lst.exists():
-            try:
-                df = pd.read_csv(lst, sep=r"\s+", header=None, names=["name", "id", "lat", "lon"])
-                loc_meta_from_lst = {int(row["id"]): row for _, row in df.iterrows()}
-                log.info("[single-nc] Loaded location.lst from %s (%d locations)", lst, len(df))
-            except Exception as exc:
-                log.warning("[single-nc] Could not read %s: %s", lst, exc)
-            break
+    # ── Find best location.lst (searches sibling SSP dirs) ───
+    loc_meta_from_lst = _find_best_location_lst(nc_path, loc_ids)
 
     # ── Build data_dict, locations, location_meta ────────────
     def _r1(arr):
         return [round(float(v), 1) for v in arr]
+
+    def _safe(v):
+        try:
+            return None if (v is None or np.isnan(v) or np.isinf(v)) else v
+        except (TypeError, ValueError):
+            return None
 
     data_dict:     dict = {}
     locations:     list = []
@@ -622,16 +674,9 @@ def load_single_nc(nc_path: Path) -> dict:
             lat  = float(row["lat"])
             lon  = float(row["lon"])
         else:
-            # -1 is the conventional FACTS global-mean location ID
-            name = "Global mean" if loc_id == -1 else f"Location {loc_id}"
-            lat  = float(lats[li]) if li < len(lats) else None
-            lon  = float(lons[li]) if li < len(lons) else None
-
-        def _safe(v):
-            try:
-                return None if (v is None or np.isnan(v) or np.isinf(v)) else v
-            except (TypeError, ValueError):
-                return None
+            name = "Global mean" if loc_id == -1 else f"ID {loc_id}"
+            lat  = _safe(float(lats[li])) if li < len(lats) else None
+            lon  = _safe(float(lons[li])) if li < len(lons) else None
 
         locations.append({"name": name, "id": loc_id, "lat": lat, "lon": lon})
         location_meta[loc_id] = {"lat": _safe(lat), "lon": _safe(lon)}
@@ -654,6 +699,7 @@ def load_single_nc(nc_path: Path) -> dict:
         "location_meta": location_meta,
         "ssps":          [ssp],
         "wfs":           [wf],
+        "comp":          comp,
     }
 
 
