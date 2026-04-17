@@ -1668,19 +1668,24 @@ def build_dashboard(
     wfs:           list,
     output_path:   Path,
     title:         str = "FACTS Sea-Level Projections",
+    single_nc_mode: bool = False,
 ):
     """
     Build and save the Bokeh interactive dashboard HTML.
 
     Args:
-        data_dict:     Keyed by "{ssp}|{component}|{wf}|{scale}|{loc_id}".
-        years:         Reference year list for axis range.
-        locations:     List of dicts from location.lst (name, id, lat, lon).
-        location_meta: Dict of {int loc_id: {lat, lon}}.
-        ssps:          List of SSP tag strings.
-        wfs:           List of workflow ID strings.
-        output_path:   Path to write the output HTML file.
-        title:         Dashboard title string.
+        data_dict:      Keyed by "{ssp}|{component}|{wf}|{scale}|{loc_id}".
+        years:          Reference year list for axis range.
+        locations:      List of dicts from location.lst (name, id, lat, lon).
+        location_meta:  Dict of {int loc_id: {lat, lon}}.
+        ssps:           List of SSP tag strings.
+        wfs:            List of workflow ID strings.
+        output_path:    Path to write the output HTML file.
+        title:          Dashboard title string.
+        single_nc_mode: When True, adapts the layout for a single-NC-file load:
+                        cycles slots through different locations, disables dead
+                        dropdowns, adds a metadata banner, and hides the
+                        component table (which would be a 1×1 grid).
 
     Example:
         build_dashboard(data_dict, years, locations, location_meta,
@@ -1718,14 +1723,30 @@ def build_dashboard(
         loc_options_all.append((str(lid), label))
 
     # ── Default slot configs ────────────────────────────────
+    # In single-NC mode there is only 1 SSP/workflow/component — cycle locations
+    # so the 6 slots show 6 different stations instead of 6 identical lines.
+    # In multi-file mode cycle SSPs as before.
     first_loc = str(all_loc_ids[1]) if len(all_loc_ids) > 1 else str(all_loc_ids[0])
+    # Collect non-global loc IDs in order for single-NC location cycling
+    local_loc_ids = [lid for lid in all_loc_ids if lid != -1]
+
     slot_defaults = []
     for i in range(6):
-        ssp_d   = ssps[i % len(ssps)]
-        wf_d    = wfs[0]
-        comp_d  = "total"
-        scale_d = "local"
-        loc_d   = first_loc
+        if single_nc_mode:
+            # Cycle through different locations; SSP/wf/comp fixed to the one available
+            cycle_lid = local_loc_ids[i % len(local_loc_ids)] if local_loc_ids else all_loc_ids[0]
+            loc_d   = str(cycle_lid)
+            ssp_d   = ssps[0]
+            wf_d    = wfs[0]
+            comp_d  = COMPONENTS[0]
+            scale_d = "local"
+        else:
+            ssp_d   = ssps[i % len(ssps)]
+            wf_d    = wfs[0]
+            comp_d  = "total"
+            scale_d = "local"
+            loc_d   = first_loc
+
         key = f"{ssp_d}|{comp_d}|{wf_d}|{scale_d}|{loc_d}"
         if key not in data_dict:
             key = next((k for k in data_dict if k.startswith(f"{ssp_d}|")), next(iter(data_dict)))
@@ -1831,9 +1852,14 @@ def build_dashboard(
         lon_v    = loc_info.get("lon")
 
         n = i + 1
-        wf_sel   = Select(title="Workflow",   value=sd["wf"],    options=wf_opts,    width=170)
-        ssp_sel  = Select(title="SSP",        value=sd["ssp"],   options=ssp_opts,   width=140)
-        comp_sel = Select(title="Component",  value=sd["comp"],  options=comp_opts,  width=200)
+        # In single-NC mode, dropdowns with only 1 option are disabled so the user
+        # doesn't waste time trying to switch something that has no alternatives.
+        _dis_wf   = single_nc_mode and len(wf_opts)   == 1
+        _dis_ssp  = single_nc_mode and len(ssp_opts)  == 1
+        _dis_comp = single_nc_mode and len(comp_opts) == 1
+        wf_sel   = Select(title="Workflow",   value=sd["wf"],    options=wf_opts,    width=170, disabled=_dis_wf)
+        ssp_sel  = Select(title="SSP",        value=sd["ssp"],   options=ssp_opts,   width=140, disabled=_dis_ssp)
+        comp_sel = Select(title="Component",  value=sd["comp"],  options=comp_opts,  width=200, disabled=_dis_comp)
         scale_sel= Select(title="Scale",      value=sd["scale"], options=scale_opts, width=140)
         loc_sel  = Select(title="Location",   value=sd["loc"],   options=loc_options_all, width=240)
 
@@ -2070,22 +2096,54 @@ def build_dashboard(
 </div>
 """, width=900)
 
+    # ── Single-NC metadata banner ──────────────────────────
+    if single_nc_mode:
+        ssp_label  = SSP_LABELS.get(ssps[0], ssps[0])
+        comp_label = COMPONENT_LABELS.get(COMPONENTS[0], COMPONENTS[0])
+        wf_label   = WF_LABELS.get(wfs[0], wfs[0])
+        yr_start   = years[0] if years else "?"
+        yr_end     = years[-1] if years else "?"
+        n_locs     = len([lid for lid in all_loc_ids if lid != -1])
+        single_nc_banner = Div(text=f"""
+<div style="background:#f0f4fa;border:1px solid #c5d3e8;border-radius:5px;
+            padding:10px 14px;margin-bottom:10px;font-size:13px;font-family:Arial,sans-serif;">
+  <b>Single-file mode</b> &mdash; auto-detected from filename:<br>
+  &nbsp;&nbsp;<b>SSP:</b> {ssp_label} &nbsp;|&nbsp;
+  <b>Component:</b> {comp_label} &nbsp;|&nbsp;
+  <b>Workflow:</b> {wf_label}<br>
+  &nbsp;&nbsp;<b>Year range:</b> {yr_start}&ndash;{yr_end} &nbsp;|&nbsp;
+  <b>Locations:</b> {n_locs} tide gauge stations<br>
+  <span style="color:#666;font-size:11px;">
+    Workflow, SSP, and Component selectors are fixed to the values above.
+    Use the Location selector in each line slot to compare different stations.
+  </span>
+</div>
+""", width=950)
+    else:
+        single_nc_banner = None
+
     # ── STACKED BAR section ────────────────────────────────
     stacked_bar_section = _build_stacked_bar_section(
         data_dict, years, ssps, wfs, loc_options_all, location_meta_js,
     )
 
-    # ── TABLE section ──────────────────────────────────────
-    comp_table_section = _build_component_table_section(
-        data_dict, years, ssps, wfs, loc_options_all, location_meta_js,
-    )
+    # ── TABLE section — hidden in single-NC mode (1×1 grid adds no value) ──
+    if not single_nc_mode:
+        comp_table_section = _build_component_table_section(
+            data_dict, years, ssps, wfs, loc_options_all, location_meta_js,
+        )
+    else:
+        comp_table_section = None
 
-    dashboard = column(
-        desc_head, controls_block, p, text_legend,
-        stacked_bar_section,
-        comp_table_section,
-        citation,
-    )
+    layout_items = [desc_head]
+    if single_nc_banner:
+        layout_items.append(single_nc_banner)
+    layout_items += [controls_block, p, text_legend, stacked_bar_section]
+    if comp_table_section:
+        layout_items.append(comp_table_section)
+    layout_items.append(citation)
+
+    dashboard = column(*layout_items)
     save(dashboard, filename=str(output_path), resources=INLINE, title=title)
     log.info("Dashboard saved → %s", output_path.resolve())
 
@@ -2167,6 +2225,7 @@ examples:
             result["locations"], result["location_meta"],
             result["ssps"], result["wfs"],
             output_path, title=title,
+            single_nc_mode=True,
         )
         log.info("Done.")
         return
