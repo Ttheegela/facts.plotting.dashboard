@@ -107,12 +107,11 @@ log = logging.getLogger("facts_dashboard")
 # ─────────────────────────────────────────────────────────
 
 SSP_COLORS = {
-    "ssp119": "#1d6ea8",   # deep blue  — lowest emissions
-    "ssp126": "#56b4e9",   # sky blue
-    "ssp245": "#f0e442",   # yellow
-    "ssp370": "#e69500",   # amber/orange
-    "ssp534": "#cc79a7",   # mauve
-    "ssp585": "#d73027",   # red        — highest emissions
+    "ssp119": "#00adcf",   # rgb(0, 173, 207)
+    "ssp126": "#173c66",   # rgb(23, 60, 102)
+    "ssp245": "#f79420",   # rgb(247, 148, 32)
+    "ssp370": "#e71d25",   # rgb(231, 29, 37)
+    "ssp585": "#951b1e",   # rgb(149, 27, 30)
 }
 _FALLBACK_COLORS = ["#4dac26", "#b8e186", "#f7f7f7", "#e9a3c9", "#c51b7d", "#542788"]
 
@@ -387,7 +386,8 @@ def load_location_list(entries: list) -> list:
     for _, _, exp_dir in entries:
         p = exp_dir / "location.lst"
         if p.exists():
-            df = pd.read_csv(p, sep=r"\s+", header=None, names=["name", "id", "lat", "lon"])
+            df = pd.read_csv(p, sep=r"\s+", header=None, names=["name", "id", "lat", "lon"],
+                             engine="python", on_bad_lines="skip")
             log.info("Loaded %d locations from %s", len(df), p)
             return df.to_dict("records")
     log.warning("No location.lst found in any experiment directory")
@@ -1884,13 +1884,10 @@ def build_dashboard(
 
     # ── Global quantile selector for line plot ─────────────
     q_line_opts = [
-        ("med", "Median (p50)"),
-        ("vlo", "5th percentile"),
-        ("lo",  "17th percentile"),
-        ("hi",  "83rd percentile"),
-        ("vhi", "95th percentile"),
+        ("narrow", "17th–83rd percentile"),
+        ("wide",   "5th–95th percentile"),
     ]
-    q_line_sel = Select(title="Line quantile:", value="med", options=q_line_opts, width=200)
+    q_line_sel = Select(title="Shading:", value="narrow", options=q_line_opts, width=200)
 
     # ── CustomJS callbacks ─────────────────────────────────
     # JS_UPDATE fires when any selector (workflow, SSP, component, scale, location) changes.
@@ -1910,9 +1907,8 @@ def build_dashboard(
         band.visible = r_solid.visible = r_dashed.visible = r_dotted.visible =
         r_circle.visible = r_diamond.visible = r_asterisk.visible = r_triangle.visible = false;
     } else {
-        const q_key = q_line_sel.value;
-        const center = (d[q_key] !== undefined) ? d[q_key] : d.med;
-        source.data = { years: d.years, med: center, lo: d.lo, hi: d.hi };
+        const wide = q_line_sel.value === 'wide';
+        source.data = { years: d.years, med: d.med, lo: wide ? d.vlo : d.lo, hi: wide ? d.vhi : d.hi };
         source.change.emit();
 
         // Colour from SSP
@@ -2061,7 +2057,12 @@ def build_dashboard(
 """, width=900)
 
     # ── Legend ─────────────────────────────────────────────
-    legend_html = """
+    _ssp_color_entries = " &nbsp;\n    ".join(
+        f'<span style="color:{SSP_COLORS.get(s, "#808080")}">&#9632;</span> {SSP_LABELS.get(s, s)}'
+        for s in ssps
+        if s in SSP_COLORS
+    )
+    legend_html = f"""
 <div style="margin-top:8px;line-height:2.0;font-size:13px;">
   <div>
     <b>Component legend:</b> &nbsp;
@@ -2075,12 +2076,7 @@ def build_dashboard(
   </div>
   <div>
     <b>SSP colours:</b> &nbsp;
-    <span style="color:#1d6ea8">&#9632;</span> SSP1-1.9 &nbsp;
-    <span style="color:#56b4e9">&#9632;</span> SSP1-2.6 &nbsp;
-    <span style="color:#f0e442">&#9632;</span> SSP2-4.5 &nbsp;
-    <span style="color:#e69500">&#9632;</span> SSP3-7.0 &nbsp;
-    <span style="color:#d73027">&#9632;</span> SSP5-8.5 &nbsp;
-    <span style="color:#cc79a7">&#9632;</span> SSP5-3.4OS
+    {_ssp_color_entries}
   </div>
 </div>
 """
@@ -2138,14 +2134,16 @@ def build_dashboard(
     layout_items = [desc_head]
     if single_nc_banner:
         layout_items.append(single_nc_banner)
-    layout_items += [controls_block, p, text_legend, stacked_bar_section]
+    layout_items += [controls_block, p, text_legend]
     if comp_table_section:
         layout_items.append(comp_table_section)
+    layout_items.append(stacked_bar_section)
     layout_items.append(citation)
 
     dashboard = column(*layout_items)
     save(dashboard, filename=str(output_path), resources=INLINE, title=title)
     log.info("Dashboard saved → %s", output_path.resolve())
+    log.info("Output size      : %.1f MB", output_path.stat().st_size / (1024 * 1024))
 
 # ─────────────────────────────────────────────────────────
 # CLI
@@ -2239,7 +2237,12 @@ examples:
         log.error("--exp-root not found: %s", exp_root)
         sys.exit(1)
 
-    default_out = (exp_root / "facts_dashboard.html") if exp_root else Path("facts_dashboard.html")
+    if exp_root:
+        default_out = exp_root / "facts_dashboard.html"
+    elif args.ssp_dirs:
+        default_out = Path(args.ssp_dirs[0]).resolve() / "facts_dashboard.html"
+    else:
+        default_out = Path("facts_dashboard.html")
     output_path = (args.output or default_out).resolve()
 
     # Ensure output directory exists
