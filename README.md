@@ -4,7 +4,7 @@ Generate an interactive, self-contained HTML dashboard from [FACTS](https://gith
 No FACTS installation required — just Docker (or Python ≥ 3.9).
 The output is a **single `.html` file** you can open in any browser — no web server, no internet connection required.
 
-> **Example dashboards:** [v1.0.0](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.0.0) · [v1.1.0](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.0) · [v1.1.1](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.1) · [v1.1.2](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.2) · [v1.1.3](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.3) · [v1.1.4](https://github.com/tt633/facts.plotting.dashboard/releases/tag/v1.1.4)
+> **Example dashboards:** [v1.0.0](https://github.com/Ttheegela/facts.plotting.dashboard/releases/tag/v1.0.0) · [v1.1.0](https://github.com/Ttheegela/facts.plotting.dashboard/releases/tag/v1.1.0) · [v1.1.1](https://github.com/Ttheegela/facts.plotting.dashboard/releases/tag/v1.1.1) · [v1.1.2](https://github.com/Ttheegela/facts.plotting.dashboard/releases/tag/v1.1.2) · [v1.1.3](https://github.com/Ttheegela/facts.plotting.dashboard/releases/tag/v1.1.3) · [v1.1.4](https://github.com/Ttheegela/facts.plotting.dashboard/releases/tag/v1.1.4)
 
 ---
 
@@ -16,42 +16,12 @@ The output is a **single `.html` file** you can open in any browser — no web s
 
 ---
 
-## Quick start
-
-### Option A — Docker (recommended)
-
-```bash
-# 1. Clone once
-git clone https://github.com/tt633/facts.plotting.dashboard.git
-cd facts.plotting.dashboard
-
-# 2. Build the image once (~1 min)
-bash docker/build.sh
-
-# 3. Generate a dashboard
-bash docker/run.sh --exp-root /path/to/exp.alt.emis/
-
-# 4. Open
-open dashboard.html       # macOS
-xdg-open dashboard.html   # Linux
-```
-
-### Option B — Direct Python
-
-```bash
-pip install bokeh xarray numpy pandas netCDF4
-
-python facts_dashboard.py --exp-root /path/to/exp.alt.emis/
-```
-
----
-
 ## Step-by-step guide
 
 ### Step 1 — Clone the repository
 
 ```bash
-git clone https://github.com/tt633/facts.plotting.dashboard.git
+git clone https://github.com/Ttheegela/facts.plotting.dashboard.git
 cd facts.plotting.dashboard
 ```
 
@@ -77,7 +47,7 @@ Done. Image built: facts-viz
 
 ### Step 3 — Generate your dashboard
 
-**Scenario A — All SSPs under one folder (most common)**
+**Option A — All SSPs under one folder (most common)**
 
 If your FACTS run looks like this:
 ```
@@ -93,7 +63,7 @@ Run:
 bash docker/run.sh --exp-root /my/experiment/
 ```
 
-**Scenario B — Each SSP in a separate folder**
+**Option B — Each SSP in a separate folder**
 
 ```bash
 bash docker/run.sh \
@@ -208,9 +178,11 @@ Missing files are skipped gracefully — partial runs are supported.
 
 ## Quick reference
 
+A condensed reminder of the two commands needed once setup is complete.
+
 ```bash
 # One-time setup
-git clone https://github.com/tt633/facts.plotting.dashboard.git
+git clone https://github.com/Ttheegela/facts.plotting.dashboard.git
 cd facts.plotting.dashboard
 bash docker/build.sh
 
