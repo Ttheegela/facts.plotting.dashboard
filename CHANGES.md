@@ -17,8 +17,8 @@ Issues **#8, #9, #14, #18** are deferred — they require Box data from Praveen 
 ## Fix 2 — Handle multi-token city names in location list CSV (closes #2, #4, #5)
 
 **File(s):** `facts_dashboard.py` — `load_location_list()` (~line 390)
-**Root cause:** The C engine aborts when whitespace-delimited rows have more tokens than `names` (e.g. "Port Louis" splits into 2 tokens).
-**Change:** Added `engine="python", on_bad_lines="skip"` to `pd.read_csv`.
+**Root cause:** pandas uses the C engine by default for CSV parsing — it is fast but strict. When reading a whitespace-separated file with 4 named columns (`name`, `id`, `lat`, `lon`), a station name containing a space (e.g. "Port Louis") splits into 2 tokens, giving the row 5 values instead of 4. The C engine treats this as a malformed row and raises a `ParserError`, crashing the dashboard before any data loads.
+**Change:** Added `engine="python", on_bad_lines="skip"` to `pd.read_csv`. The Python engine is more flexible with irregular rows, and `on_bad_lines="skip"` discards any row it cannot parse cleanly instead of aborting.
 
 ---
 
@@ -70,11 +70,12 @@ Issues **#8, #9, #14, #18** are deferred — they require Box data from Praveen 
 
 ---
 
-## Fix 9 — Remove dennis_demo directory (closes #11)
+## Fix 9 — Remove dennis_demo directory; fix --single-nc-file in run.sh (closes #11)
 
-**File(s):** `dennis_demo/` (entire directory)
-**Root cause:** Single-file NC viewer demo was stale and not part of the dashboard workflow.
-**Change:** Removed via `git rm -r dennis_demo/`.
+**File(s):** `dennis_demo/` (entire directory), `docker/run.sh`
+**Root cause (dennis_demo):** Single-file NC viewer demo was stale and not part of the dashboard workflow. Praveen requested it be removed and the single-NC plotting capability kept inside `facts_dashboard.py` using the existing `--single-nc-file` flag.
+**Root cause (run.sh):** `run.sh` only knew how to mount `--exp-root`, `--ssp-dir`, and `--output` paths into the Docker container. `--single-nc-file` was passed through unhandled, so the container never saw the file. Additionally, the path resolution treated the NC file as a directory mount instead of a file mount, causing the output HTML to be written to `/mnt/facts_dashboard.html` — outside any mounted volume and lost when the container exited.
+**Change:** Removed `dennis_demo/` via `git rm`. Fixed `run.sh` to include `--single-nc-file` in the file-aware mount branch (mounts parent directory, passes full container path to the file). Added auto-injection of `--output` pointing to the repo folder (host CWD) when `--single-nc-file` is used without an explicit `--output`, so the HTML always lands in `facts.plotting.dashboard/` instead of inside the data directories.
 
 ---
 
