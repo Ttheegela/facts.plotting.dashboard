@@ -112,6 +112,7 @@ SSP_COLORS = {
     "ssp370": "#e69500",   # amber/orange
     "ssp534": "#cc79a7",   # mauve
     "ssp585": "#d73027",   # red        — highest emissions
+    "H.ssp370": "#e9a3c9",   
 }
 _FALLBACK_COLORS = ["#4dac26", "#b8e186", "#f7f7f7", "#e9a3c9", "#c51b7d", "#542788"]
 
@@ -122,6 +123,7 @@ SSP_LABELS = {
     "ssp370": "SSP3-7.0",
     "ssp585": "SSP5-8.5",
     "ssp534": "SSP5-3.4 overshoot",
+    "H.ssp370": "H.ssp370",
 }
 
 WF_LABELS = {
@@ -154,60 +156,57 @@ COMPONENT_STYLES = {
 # from any reference table produced by a separate run. This is expected, not a bug.
 WORKFLOW_COMPONENT_FILES = {
     "wf1e": {
-        "AIS":      "coupling.{ssp}.emuAIS.emulandice.AIS_{scale}sl.nc",
-        "GrIS":     "coupling.{ssp}.emuGrIS.emulandice.GrIS_{scale}sl.nc",
-        "glaciers": "coupling.{ssp}.emuglaciers.emulandice.glaciers_{scale}sl.nc",
+        "AIS":      "emuAIS.emulandice.AIS_{scale}sl.nc",
+        "GrIS":     "emuGrIS.emulandice.GrIS_{scale}sl.nc",
+        "glaciers": "emuglaciers.emulandice.glaciers_{scale}sl.nc",
     },
     "wf1f": {
-        "AIS":      "coupling.{ssp}.ar5AIS.ipccar5.icesheets_AIS_{scale}sl.nc",
-        "GrIS":     "coupling.{ssp}.GrIS1f.FittedISMIP.GrIS_GIS_{scale}sl.nc",
-        "glaciers": "coupling.{ssp}.ar5glaciers.ipccar5.glaciers_{scale}sl.nc",
+        "AIS":      "ar5AIS.ipccar5.icesheets_AIS_{scale}sl.nc",
+        "GrIS":     "GrIS1f.FittedISMIP.GrIS_GIS_{scale}sl.nc",
+        "glaciers": "ar5glaciers.ipccar5.glaciers_{scale}sl.nc",
     },
     "wf2e": {
-        "AIS":      "coupling.{ssp}.larmip.larmip.AIS_{scale}sl.nc",
-        "GrIS":     "coupling.{ssp}.emuGrIS.emulandice.GrIS_{scale}sl.nc",
-        "glaciers": "coupling.{ssp}.emuglaciers.emulandice.glaciers_{scale}sl.nc",
+        "AIS":      "larmip.larmip.AIS_{scale}sl.nc",
+        "GrIS":     "emuGrIS.emulandice.GrIS_{scale}sl.nc",
+        "glaciers": "emuglaciers.emulandice.glaciers_{scale}sl.nc",
     },
     "wf2f": {
-        "AIS":      "coupling.{ssp}.larmip.larmip.AIS_{scale}sl.nc",
-        "GrIS":     "coupling.{ssp}.GrIS1f.FittedISMIP.GrIS_GIS_{scale}sl.nc",
-        "glaciers": "coupling.{ssp}.ar5glaciers.ipccar5.glaciers_{scale}sl.nc",
+        "AIS":      "larmip.larmip.AIS_{scale}sl.nc",
+        "GrIS":     "GrIS1f.FittedISMIP.GrIS_GIS_{scale}sl.nc",
+        "glaciers": "ar5glaciers.ipccar5.glaciers_{scale}sl.nc",
     },
     "wf3e": {
-        "AIS":      "coupling.{ssp}.deconto21.deconto21.AIS_AIS_{scale}sl.nc",
-        "GrIS":     "coupling.{ssp}.emuGrIS.emulandice.GrIS_{scale}sl.nc",
-        "glaciers": "coupling.{ssp}.emuglaciers.emulandice.glaciers_{scale}sl.nc",
+        "AIS":      "deconto21.deconto21.AIS_AIS_{scale}sl.nc",
+        "GrIS":     "emuGrIS.emulandice.GrIS_{scale}sl.nc",
+        "glaciers": "emuglaciers.emulandice.glaciers_{scale}sl.nc",
     },
     "wf3f": {
-        "AIS":      "coupling.{ssp}.deconto21.deconto21.AIS_AIS_{scale}sl.nc",
-        "GrIS":     "coupling.{ssp}.GrIS1f.FittedISMIP.GrIS_GIS_{scale}sl.nc",
-        "glaciers": "coupling.{ssp}.ar5glaciers.ipccar5.glaciers_{scale}sl.nc",
+        "AIS":      "deconto21.deconto21.AIS_AIS_{scale}sl.nc",
+        "GrIS":     "GrIS1f.FittedISMIP.GrIS_GIS_{scale}sl.nc",
+        "glaciers": "ar5glaciers.ipccar5.glaciers_{scale}sl.nc",
     },
     "wf4": {
-        "AIS":      "coupling.{ssp}.bamber19.bamber19.icesheets_AIS_{scale}sl.nc",
-        "GrIS":     "coupling.{ssp}.bamber19.bamber19.icesheets_GIS_{scale}sl.nc",
-        "glaciers": "coupling.{ssp}.ar5glaciers.ipccar5.glaciers_{scale}sl.nc",
+        "AIS":      "bamber19.bamber19.icesheets_AIS_{scale}sl.nc",
+        "GrIS":     "bamber19.bamber19.icesheets_GIS_{scale}sl.nc",
+        "glaciers": "ar5glaciers.ipccar5.glaciers_{scale}sl.nc",
     },
 }
 
-# When a workflow component file is missing, sum these sub-files instead.
-# wf1f AIS local: ar5AIS outputs EAIS + WAIS separately — no combined local file exists.
 WORKFLOW_COMPONENT_FALLBACK_SUM = {
     "wf1f": {
         "AIS": {
             "local": [
-                "coupling.{ssp}.ar5AIS.ipccar5.icesheets_EAIS_{scale}sl.nc",
-                "coupling.{ssp}.ar5AIS.ipccar5.icesheets_WAIS_{scale}sl.nc",
+                "ar5AIS.ipccar5.icesheets_EAIS_{scale}sl.nc",
+                "ar5AIS.ipccar5.icesheets_WAIS_{scale}sl.nc",
             ]
         }
     }
 }
 
-# Workflow-independent components (same file for all workflows).
 WORKFLOW_INDEPENDENT_COMPONENTS = {
-    "sterodynamics":    "coupling.{ssp}.ocean.tlm.sterodynamics_{scale}sl.nc",
-    "landwaterstorage": "coupling.{ssp}.lws.ssp.landwaterstorage_{scale}sl.nc",
-    "vlm":              "coupling.{ssp}.k14vlm.kopp14.verticallandmotion_{scale}sl.nc",
+    "sterodynamics":    "ocean.tlm.sterodynamics_{scale}sl.nc",
+    "landwaterstorage": "lws.ssp.landwaterstorage_{scale}sl.nc",
+    "vlm":              "k14vlm.kopp14.verticallandmotion_{scale}sl.nc",
 }
 
 COMPONENTS = (
@@ -243,11 +242,11 @@ YMAX_FIXED = 6000
 def _count_nc_locations(out_dir: Path) -> int:
     """
     Return the number of tide gauge locations in the first available
-    *.total.workflow.*.local.nc file found in out_dir.
+    *.total.workflow.*.local*.nc file found in out_dir.
     Used to prefer the output directory that has more locations (more complete run).
     Returns 0 if no suitable file exists or the file cannot be read.
     """
-    candidates = list(out_dir.glob("*.total.workflow.*.local.nc"))
+    candidates = sorted(out_dir.glob("*.total.workflow.*.local*.nc"))
     if not candidates:
         return 0
     try:
@@ -257,48 +256,111 @@ def _count_nc_locations(out_dir: Path) -> int:
         return n
     except Exception:
         return 0
+    
+def _parse_run_prefix_and_ssp(nc_path: Path) -> tuple[str, str]:
+    """
+    Examples
+    --------
+    coupling.ssp126.total.workflow.wf1e.local.nc   -> ("coupling.ssp126", "ssp126")
+    coupling.ssp126.total.workflow.wf1e.localsl.nc -> ("coupling.ssp126", "ssp126")
+    src.H.ssp370.total.workflow.wf1e.local.nc      -> ("src.H.ssp370", "H.ssp370")
+    src.H.ssp370.total.workflow.wf1e.localsl.nc    -> ("src.H.ssp370", "H.ssp370")
+    """
+    stem = nc_path.stem
+    marker = ".total.workflow."
+    if marker not in stem:
+        raise ValueError(f"Cannot parse run prefix from {nc_path.name}")
+    run_prefix = stem.split(marker, 1)[0]
+    parts = run_prefix.split(".")
+    ssp_tag = ".".join(parts[1:]) if len(parts) > 1 else run_prefix
+    return run_prefix, ssp_tag
+
+
+def _build_nc_path(out_dir: Path, run_prefix: str, suffix: str) -> Path:
+    """
+    Build a file path using the discovered run prefix.
+
+    Example
+    -------
+    run_prefix = "src.H.ssp370"
+    suffix     = "ocean.tlm.sterodynamics_globalsl.nc"
+    result     = out_dir / "src.H.ssp370.ocean.tlm.sterodynamics_globalsl.nc"
+    """
+    return out_dir / f"{run_prefix}.{suffix}"
+
+
+def _resolve_total_nc(out_dir: Path, run_prefix: str, wf: str, scale: str) -> Path:
+    """
+    Accept either:
+      ...total.workflow.wf1e.local.nc
+      ...total.workflow.wf1e.localsl.nc
+      ...total.workflow.wf1e.global.nc
+      ...total.workflow.wf1e.globalsl.nc
+    """
+    hits = sorted(out_dir.glob(f"{run_prefix}.total.workflow.{wf}.{scale}*.nc"))
+    if hits:
+        return hits[0]
+    return out_dir / f"{run_prefix}.total.workflow.{wf}.{scale}.nc"
+
 
 
 def collect_ssp_entries(exp_root: Path = None, ssp_dirs: list = None) -> list:
     """
-    Returns a list of (ssp_tag, output_dir, exp_dir) tuples.
+    Returns a list of (ssp_tag, run_prefix, output_dir, exp_dir) tuples.
 
-    Args:
-        exp_root:  Root folder — scan for coupling.ssp* subdirectories.
-        ssp_dirs:  List of individual SSP experiment folders (or their output/ subfolders).
-
-    Returns:
-        Sorted list of (ssp_tag, output_dir, exp_dir).
-
-    Example:
-        entries = collect_ssp_entries(exp_root=Path("exp.alt.emis/"))
+    Examples
+    --------
+    coupling.ssp126.total.workflow... -> ("ssp126", "coupling.ssp126", ...)
+    src.H.ssp370.total.workflow...    -> ("H.ssp370", "src.H.ssp370", ...)
     """
     entries   = []
     seen_tags = set()
 
+    def _maybe_add_entry(exp_dir: Path, out_dir: Path):
+        nonlocal entries, seen_tags
+
+        if not out_dir.is_dir():
+            return
+
+        nc_files = sorted(out_dir.glob("*.total.workflow.*.nc"))
+        if not nc_files:
+            return
+
+        try:
+            run_prefix, tag = _parse_run_prefix_and_ssp(nc_files[0])
+        except Exception as exc:
+            log.warning("Could not parse run prefix in %s: %s", out_dir, exc)
+            return
+
+        if tag in seen_tags:
+            log.warning("SSP %s already added — skipping %s", tag, out_dir)
+            return
+
+        entries.append((tag, run_prefix, out_dir, exp_dir))
+        seen_tags.add(tag)
+        log.info("Found SSP %s (prefix=%s) in %s", tag, run_prefix, out_dir)
+
     if exp_root:
         for d in sorted(exp_root.iterdir()):
-            if not (d.is_dir() and d.name.startswith("coupling.ssp")):
+            if not d.is_dir():
                 continue
-            out = d / "output"
-            if not (out.is_dir() and any(out.glob("*.total.workflow.*.nc"))):
+
+            out = d / "output" if (d / "output").is_dir() else d
+            if not any(out.glob("*.total.workflow.*.nc")):
                 continue
-            # If an "output copy" directory also exists, pick whichever has more
-            # tide gauge locations in its local nc files.  This handles the case
-            # where output/ is a partial/newer run (e.g. ssp585 run with only 1
-            # location) while "output copy" holds the full original Indian Ocean run.
+
             out_copy = d / "output copy"
             if out_copy.is_dir() and any(out_copy.glob("*.total.workflow.*.nc")):
                 n_out  = _count_nc_locations(out)
                 n_copy = _count_nc_locations(out_copy)
                 if n_copy > n_out:
-                    log.info("Preferring 'output copy' for %s (%d locs > %d locs in output/)",
-                             d.name, n_copy, n_out)
+                    log.info(
+                        "Preferring 'output copy' for %s (%d locs > %d locs in output/)",
+                        d.name, n_copy, n_out
+                    )
                     out = out_copy
-            tag = d.name[len("coupling."):]
-            entries.append((tag, out, d))
-            seen_tags.add(tag)
-            log.info("Found SSP %s in %s", tag, out)
+
+            _maybe_add_entry(d, out)
 
     for raw in (ssp_dirs or []):
         p = Path(raw).resolve()
@@ -313,30 +375,7 @@ def collect_ssp_entries(exp_root: Path = None, ssp_dirs: list = None) -> list:
             out_dir = p
             exp_dir = p.parent
 
-        if not out_dir.is_dir():
-            log.warning("Directory not found — %s", out_dir)
-            continue
-
-        nc_files = sorted(out_dir.glob("*.total.workflow.*.nc"))
-        if not nc_files:
-            log.warning("No total.workflow .nc files in %s", out_dir)
-            continue
-
-        tag = next(
-            (part for part in nc_files[0].stem.split(".") if part.startswith("ssp")),
-            None,
-        )
-        if tag is None:
-            log.warning("Could not determine SSP tag from %s", nc_files[0].name)
-            continue
-
-        if tag in seen_tags:
-            log.warning("SSP %s already added — skipping %s", tag, out_dir)
-            continue
-
-        entries.append((tag, out_dir, exp_dir))
-        seen_tags.add(tag)
-        log.info("Found SSP %s in %s", tag, out_dir)
+        _maybe_add_entry(exp_dir, out_dir)
 
     return sorted(entries, key=lambda e: e[0])
 
@@ -346,22 +385,19 @@ def discover_workflows(entries: list) -> list:
     Discover all workflow IDs present in the output .nc filenames.
 
     Args:
-        entries: List of (ssp_tag, output_dir, exp_dir) tuples.
+        entries: List of (ssp_tag, run_prefix, output_dir, exp_dir) tuples.
 
     Returns:
         Sorted list of workflow ID strings (e.g. ["wf1e", "wf1f", ...]).
-
-    Example:
-        wfs = discover_workflows(entries)
     """
     wfs = set()
-    for _, out_dir, _ in entries:
+    for _, _, out_dir, _ in entries:
         for f in out_dir.glob("*.total.workflow.*.nc"):
             parts = f.stem.split(".")
             for i, p in enumerate(parts):
                 if p == "workflow" and i + 1 < len(parts):
                     c = parts[i + 1]
-                    if c not in ("local", "global"):
+                    if c not in ("local", "global", "localsl", "globalsl"):
                         wfs.add(c)
     order = list(WF_LABELS.keys())
     return sorted(wfs, key=lambda w: order.index(w) if w in order else 99)
@@ -372,15 +408,12 @@ def load_location_list(entries: list) -> list:
     Load tide gauge station list from location.lst in the first available exp_dir.
 
     Args:
-        entries: List of (ssp_tag, output_dir, exp_dir) tuples.
+        entries: List of (ssp_tag, run_prefix, output_dir, exp_dir) tuples.
 
     Returns:
         List of dicts with keys: name, id, lat, lon.
-
-    Example:
-        locations = load_location_list(entries)
     """
-    for _, _, exp_dir in entries:
+    for _, _, _, exp_dir in entries:
         p = exp_dir / "location.lst"
         if p.exists():
             df = pd.read_csv(p, sep=r"\s+", header=None, names=["name", "id", "lat", "lon"])
@@ -505,14 +538,11 @@ def precompute_all(entries: list, wfs: list) -> tuple:
                   (same data stored under every wf so JS lookup is uniform)
 
     Args:
-        entries: List of (ssp_tag, output_dir, exp_dir) tuples.
+        entries: List of (ssp_tag, run_prefix, output_dir, exp_dir) tuples.
         wfs:     List of workflow IDs.
 
     Returns:
         (data_dict, years_ref, location_meta)
-
-    Example:
-        data_dict, years, loc_meta = precompute_all(entries, wfs)
     """
     data_dict     = {}
     location_meta = {}
@@ -520,14 +550,14 @@ def precompute_all(entries: list, wfs: list) -> tuple:
 
     # ── Total workflow files ───────────────────────────────
     total_combos = [
-        (ssp, out_dir, wf, sc)
-        for ssp, out_dir, _ in entries
+        (ssp, run_prefix, out_dir, wf, sc)
+        for ssp, run_prefix, out_dir, _ in entries
         for wf in wfs
         for sc in ("local", "global")
     ]
     log.info("Loading total workflow files (%d combinations) ...", len(total_combos))
-    for i, (ssp, out_dir, wf, scale) in enumerate(total_combos):
-        nc_path = out_dir / f"coupling.{ssp}.total.workflow.{wf}.{scale}.nc"
+    for i, (ssp, run_prefix, out_dir, wf, scale) in enumerate(total_combos):
+        nc_path = _resolve_total_nc(out_dir, run_prefix, wf, scale)
         log.debug("[%3d/%d] %s", i + 1, len(total_combos), nc_path.name)
         if not nc_path.exists():
             log.debug("  Not found — skipping")
@@ -543,26 +573,33 @@ def precompute_all(entries: list, wfs: list) -> tuple:
 
     # ── Workflow-specific components (AIS, GrIS, glaciers) ─
     log.info("Loading workflow-specific component files ...")
-    for ssp, out_dir, _ in entries:
+    for ssp, run_prefix, out_dir, _ in entries:
         for wf in wfs:
             for comp, pattern in WORKFLOW_COMPONENT_FILES.get(wf, {}).items():
                 for scale in ("local", "global"):
-                    nc_path = out_dir / pattern.format(ssp=ssp, scale=scale)
+                    nc_path = _build_nc_path(out_dir, run_prefix, pattern.format(scale=scale))
                     log.debug("  %s  %s  %s  %s", wf, comp, scale, nc_path.name)
                     if not nc_path.exists():
-                        # Check for a fallback sum (e.g. wf1f AIS local = EAIS + WAIS)
-                        fallback = (WORKFLOW_COMPONENT_FALLBACK_SUM
-                                    .get(wf, {}).get(comp, {}).get(scale))
+                        fallback = (
+                            WORKFLOW_COMPONENT_FALLBACK_SUM
+                            .get(wf, {})
+                            .get(comp, {})
+                            .get(scale)
+                        )
                         if fallback:
-                            fb_paths = [out_dir / p.format(ssp=ssp, scale=scale)
-                                        for p in fallback]
+                            fb_paths = [
+                                _build_nc_path(out_dir, run_prefix, p.format(scale=scale))
+                                for p in fallback
+                            ]
                             if all(p.exists() for p in fb_paths):
                                 log.debug("  Fallback sum: %s", [p.name for p in fb_paths])
                                 try:
                                     result = compute_quantiles_sum(fb_paths)
                                 except Exception as exc:
-                                    log.warning("Failed fallback sum %s|%s|%s|%s: %s",
-                                                ssp, comp, wf, scale, exc)
+                                    log.warning(
+                                        "Failed fallback sum %s|%s|%s|%s: %s",
+                                        ssp, comp, wf, scale, exc
+                                    )
                                     continue
                             else:
                                 log.debug("  Not found and fallback incomplete — skipping")
@@ -576,16 +613,17 @@ def precompute_all(entries: list, wfs: list) -> tuple:
                         except Exception as exc:
                             log.warning("Failed to load %s: %s", nc_path.name, exc)
                             continue
+
                     if years_ref is None or len(result["years"]) > len(years_ref):
                         years_ref = result["years"]
                     _store_result(data_dict, location_meta, result, f"{ssp}|{comp}|{wf}|{scale}")
 
     # ── Workflow-independent components (sterodynamics, lws, vlm) ─
     log.info("Loading workflow-independent component files ...")
-    for ssp, out_dir, _ in entries:
+    for ssp, run_prefix, out_dir, _ in entries:
         for comp, pattern in WORKFLOW_INDEPENDENT_COMPONENTS.items():
             for scale in ("local", "global"):
-                nc_path = out_dir / pattern.format(ssp=ssp, scale=scale)
+                nc_path = _build_nc_path(out_dir, run_prefix, pattern.format(scale=scale))
                 log.debug("  %s  %s  %s", comp, scale, nc_path.name)
                 if not nc_path.exists():
                     log.debug("  Not found — skipping")
@@ -597,16 +635,12 @@ def precompute_all(entries: list, wfs: list) -> tuple:
                     continue
                 if years_ref is None or len(result["years"]) > len(years_ref):
                     years_ref = result["years"]
-                # Fan-out: store the same result under every workflow key.
-                # Sterodynamics/LWS/VLM are workflow-independent, but the JS lookup
-                # always uses the full key "{ssp}|{comp}|{wf}|{scale}|{loc_id}".
-                # Duplicating the data under each wf keeps the key format uniform
-                # and avoids special-casing in the browser callback.
                 for wf in wfs:
                     _store_result(data_dict, location_meta, result, f"{ssp}|{comp}|{wf}|{scale}")
 
     log.info("Loaded %d data series total.", len(data_dict))
     return data_dict, years_ref or [], location_meta
+
 
 # ─────────────────────────────────────────────────────────
 # HTML helpers
