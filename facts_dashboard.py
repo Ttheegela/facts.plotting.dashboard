@@ -86,7 +86,8 @@ from bokeh.io import save
 from bokeh.layouts import column, row
 from bokeh.models import (
     Checkbox, CheckboxGroup, ColumnDataSource, CustomJS, DataTable, Div,
-    CustomJSTickFormatter, FixedTicker, HTMLTemplateFormatter, HoverTool, Range1d, RangeSlider, Select, TableColumn, Toggle,
+    CustomJSTickFormatter, FixedTicker, GlyphRenderer, HTMLTemplateFormatter,
+    HoverTool, Legend, LegendItem, Range1d, RangeSlider, Select, TableColumn, Toggle,
 )
 from bokeh.plotting import figure
 from bokeh.resources import INLINE   # embeds all JS/CSS inline so the HTML is self-contained
@@ -230,11 +231,15 @@ COMPONENT_LABELS = {
 # Index map used throughout: 0=p05, 1=p17, 2=p50(median), 3=p83, 4=p95
 QUANTILES = [0.05, 0.17, 0.50, 0.83, 0.95]
 
+def _r1(arr):
+    """Round a float array to 1 decimal place (mm precision). Used throughout for data compaction."""
+    return [round(float(v), 1) for v in arr]
+
 # Fixed slider bounds
 XMIN_FIXED = 2020
 XMAX_FIXED = 2300
 YMIN_FIXED = -500
-YMAX_FIXED = 6000
+YMAX_FIXED = 4000
 
 # Bar chart: max locations to show by default (Bob: "fewer tide gauges for better comparison")
 BAR_DEFAULT_N_LOCS = 8
@@ -478,7 +483,6 @@ def _store_result(data_dict, location_meta, result, key_prefix):
         # Key format: "{ssp}|{component}|{wf}|{scale}|{loc_id}"
         # loc_id = -1 for global mean SL; positive int for tide gauge station
         key = f"{key_prefix}|{loc_id}"
-        def _r1(arr): return [round(float(v), 1) for v in arr]
         data_dict[key] = {
             "years": result["years"],
             "med":   _r1(q[2, :, li]),   # p50 — median projection
@@ -652,9 +656,6 @@ def load_single_nc(nc_path: Path) -> dict:
     loc_meta_from_lst = _find_best_location_lst(nc_path, loc_ids)
 
     # ── Build data_dict, locations, location_meta ────────────
-    def _r1(arr):
-        return [round(float(v), 1) for v in arr]
-
     def _safe(v):
         try:
             return None if (v is None or np.isnan(v) or np.isinf(v)) else v
@@ -1085,6 +1086,7 @@ def _build_component_table_section(
     wfs:              list,
     loc_options_all:  list,
     location_meta_js: dict,
+    unit_sel:         object = None,
 ) -> object:
     """
     Build the interactive component breakdown TABLE (Bokeh DataTable).
@@ -1113,12 +1115,6 @@ def _build_component_table_section(
     default_scale    = "global"
     default_loc_int  = -1   # global mean SL — matches professor's reference table default
     comps = COMPONENTS      # [total, AIS, GrIS, glaciers, sterodynamics, landwaterstorage, vlm]
-
-    def _comp_cell(comp, wf, year_int, scale, loc_int):
-        lookup_loc = -1 if scale == "global" else loc_int
-        key = f"{wf_to_ssp_key(comp, wf, scale, lookup_loc)}"  # placeholder; filled per SSP below
-        # (actual per-SSP lookup done in the loop below)
-        return None  # unused; loop below handles it
 
     # Pre-populate for default selections
     init_data = {"component": list(comps)}
@@ -1191,6 +1187,11 @@ def _build_component_table_section(
     // Global SL uses loc_id=-1 (only one location in global .nc files)
     const loc_val   = (scale_val === "global") ? -1 : parseInt(loc_sel.value);
 
+    const uf_map = {"mm": 1.0, "cm": 0.1, "m": 0.001};
+    const uf = uf_map[unit_sel.value] || 1.0;
+    const dp_map = {"mm": 1, "cm": 2, "m": 4};
+    const dp = dp_map[unit_sel.value] || 1;
+
     const new_data = { component: comps.slice() };
     for (let j = 0; j < ssps.length; j++) { new_data[ssps[j]] = []; }
 
@@ -1203,12 +1204,14 @@ def _build_component_table_section(
             if (!d) { new_data[ssp].push(""); continue; }
             const idx = d.years.indexOf(year_val);
             if (idx === -1) { new_data[ssp].push(""); continue; }
-            const med = d.med[idx], lo = d.lo[idx], hi = d.hi[idx];
-            const vlo = (d.vlo !== undefined) ? d.vlo[idx] : null;
-            const vhi = (d.vhi !== undefined) ? d.vhi[idx] : null;
-            let cell = med.toFixed(1) + "\\n(" + lo.toFixed(1) + ", " + hi.toFixed(1) + ")";
+            const med = d.med[idx] * uf, lo = d.lo[idx] * uf, hi = d.hi[idx] * uf;
+            const vlo_raw = (d.vlo !== undefined) ? d.vlo[idx] : null;
+            const vhi_raw = (d.vhi !== undefined) ? d.vhi[idx] : null;
+            const vlo = vlo_raw !== null ? vlo_raw * uf : null;
+            const vhi = vhi_raw !== null ? vhi_raw * uf : null;
+            let cell = med.toFixed(dp) + "\\n(" + lo.toFixed(dp) + ", " + hi.toFixed(dp) + ")";
             if (vlo !== null && vhi !== null) {
-                cell += "\\n[" + vlo.toFixed(1) + ", " + vhi.toFixed(1) + "]";
+                cell += "\\n[" + vlo.toFixed(dp) + ", " + vhi.toFixed(dp) + "]";
             }
             new_data[ssp].push(cell);
         }
@@ -1224,6 +1227,7 @@ def _build_component_table_section(
             wf_sel=wf_sel, year_sel=year_sel,
             scale_sel=scale_sel, loc_sel=loc_sel,
             ssps=ssps, comps=comps,
+            unit_sel=unit_sel,
         ),
         code=JS_COMP,
     )
@@ -1231,6 +1235,7 @@ def _build_component_table_section(
     year_sel.js_on_change("value",  cb)
     scale_sel.js_on_change("value", cb)
     loc_sel.js_on_change("value",   cb)
+    unit_sel.js_on_change("value",  cb)
 
     comp_head = Div(text="""
 <div style="margin-top:32px;margin-bottom:6px;">
@@ -1252,6 +1257,7 @@ def _build_stacked_bar_section(
     wfs:              list,
     loc_options_all:  list,
     location_meta_js: dict,
+    unit_sel:         object = None,
 ) -> object:
     """
     Build the grouped bar chart section.
@@ -1263,7 +1269,7 @@ def _build_stacked_bar_section(
     Controls: workflow, component, scale, year, quantile.
     HoverTool shows location name, coords, SSP label, and value.
     """
-    SSP_ORDER = ["ssp119", "ssp126", "ssp245", "ssp370", "ssp534", "ssp585"]
+    SSP_ORDER = ["ssp119", "ssp126", "ssp245", "ssp370", "ssp585"]
     plot_ssps = [s for s in SSP_ORDER if s in ssps] + [s for s in ssps if s not in SSP_ORDER]
     n_ssps    = len(plot_ssps)
 
@@ -1390,7 +1396,6 @@ def _build_stacked_bar_section(
     p_bar.xaxis.major_label_orientation = 1.0
 
     # -- Legend: one entry per SSP (manual, outside plot) --
-    from bokeh.models import Legend, LegendItem, GlyphRenderer
     legend_items = []
     for si, ssp in enumerate(plot_ssps):
         color = SSP_COLORS.get(ssp, _FALLBACK_COLORS[si % len(_FALLBACK_COLORS)])
@@ -1474,12 +1479,18 @@ def _build_stacked_bar_section(
     # -- CustomJS callback --
     Q_LABELS_JS = {v: lbl for v, lbl in q_opts}
 
+    # Local unit selector for the bar chart section (stays in sync with the line plot one)
+    unit_sel_bar = Select(title="Units:", value="mm",
+                          options=[("mm", "mm"), ("cm", "cm"), ("m", "m")], width=100)
+
     JS_BAR = """
     const wf    = wf_sel.value;
     const comp  = comp_sel.value;
     const scale = scale_sel.value;
     const year  = parseInt(year_sel.value);
     const q_key = q_sel.value;
+    const uf_map = {"mm": 1.0, "cm": 0.1, "m": 0.001};
+    const uf = uf_map[unit_sel.value] || 1.0;
 
     // Active SSPs from checkbox
     const active_ssp_set = new Set(chk_ssp.active);
@@ -1520,7 +1531,7 @@ def _build_stacked_bar_section(
                 if (idx !== -1 && d[q_key] !== undefined) val = d[q_key][idx];
             }
             xs.push(x);
-            ys.push(val);
+            ys.push(val * uf);
             colors.push(ssp_color_map[ssp]);
             ssp_labels.push(ssp_label_map[ssp] || ssp);
             loc_names_out.push(loc_names_arr[li]);
@@ -1554,7 +1565,8 @@ def _build_stacked_bar_section(
     const q_label = q_label_map[q_key] || q_key;
     p_bar.title.text = "RSL Projections at " + year +
         " — SSP Comparison per Tide Gauge" +
-        "  (" + wf + ", " + comp + ", " + scale + ", " + q_label + ")";
+        "  (" + wf + ", " + comp + ", " + scale + ", " + q_label + ", " + unit_sel.value + ")";
+    y_axis_bar.axis_label = "RSL Change (" + unit_sel.value + ")";
     """
 
     cb = CustomJS(
@@ -1581,16 +1593,19 @@ def _build_stacked_bar_section(
                              for i, s in enumerate(plot_ssps)},
             ssp_label_map = {s: SSP_LABELS.get(s, s) for s in plot_ssps},
             q_label_map   = Q_LABELS_JS,
+            unit_sel      = unit_sel,
+            y_axis_bar    = p_bar.yaxis[0],
         ),
         code=JS_BAR,
     )
-    wf_sel.js_on_change("value",     cb)
-    comp_sel.js_on_change("value",   cb)
-    scale_sel.js_on_change("value",  cb)
-    year_sel.js_on_change("value",   cb)
-    q_sel.js_on_change("value",      cb)
-    chk_ssp.js_on_change("active", cb)
-    chk_loc.js_on_change("active", cb)
+    wf_sel.js_on_change("value",       cb)
+    comp_sel.js_on_change("value",     cb)
+    scale_sel.js_on_change("value",    cb)
+    year_sel.js_on_change("value",     cb)
+    q_sel.js_on_change("value",        cb)
+    chk_ssp.js_on_change("active",     cb)
+    chk_loc.js_on_change("active",     cb)
+    unit_sel.js_on_change("value",     cb)   # driven by the shared line-plot widget
 
     # -- Y-axis range slider (same pattern as line plot section) --
     bar_ys = [v for v in init_data["y"] if v is not None]
@@ -1604,7 +1619,7 @@ def _build_stacked_bar_section(
     p_bar.y_range = Range1d(bar_y_init_min, bar_y_init_max)
 
     y_bar_slider = RangeSlider(
-        title="Y range (mm)",
+        title="Y range",
         start=YMIN_FIXED, end=YMAX_FIXED,
         value=(bar_y_init_min, bar_y_init_max),
         step=bar_y_step, width=600,
@@ -1615,6 +1630,35 @@ def _build_stacked_bar_section(
         p.y_range.start = Math.max(s.start, s.value[0]);
         p.y_range.end   = Math.min(s.end,   s.value[1]);
         """,
+    ))
+    # Bar axis label + slider reset — driven by the shared unit_sel widget
+    unit_sel.js_on_change("value", CustomJS(
+        args=dict(p=p_bar, y_bar_slider=y_bar_slider, unit_sel=unit_sel,
+                  y_axis_bar=p_bar.yaxis[0]),
+        code="""
+        const uf_map = {"mm": 1.0, "cm": 0.1, "m": 0.001};
+        const uf = uf_map[unit_sel.value] || 1.0;
+        const ymin_u = -500 * uf;
+        const ymax_u = 4000 * uf;
+        y_bar_slider.start      = ymin_u;
+        y_bar_slider.end        = ymax_u;
+        y_bar_slider.value      = [ymin_u, ymax_u];
+        p.y_range.start         = ymin_u;
+        p.y_range.end           = ymax_u;
+        y_axis_bar.axis_label   = "RSL Change (" + unit_sel.value + ")";
+        """,
+    ))
+
+    # ── unit_sel_bar is a display-only mirror — syncs both ways with unit_sel ──
+    # Bar → shared: user changes bar dropdown → update shared widget → all callbacks fire
+    unit_sel_bar.js_on_change("value", CustomJS(
+        args=dict(other=unit_sel),
+        code="if (other.value !== cb_obj.value) other.value = cb_obj.value;",
+    ))
+    # Shared → bar: shared widget changes (e.g. from line plot) → update bar display
+    unit_sel.js_on_change("value", CustomJS(
+        args=dict(other=unit_sel_bar),
+        code="if (other.value !== cb_obj.value) other.value = cb_obj.value;",
     ))
 
     ssp_chk_label = Div(
@@ -1635,24 +1679,12 @@ def _build_stacked_bar_section(
 
     return column(
         bar_head,
-        row(wf_sel, comp_sel, scale_sel, year_sel, q_sel),
+        row(wf_sel, comp_sel, scale_sel, year_sel, q_sel, unit_sel_bar),
         row(ssp_chk_label, chk_ssp),
         row(column(loc_toggle, chk_loc)),
         y_bar_slider,
         p_bar,
     )
-
-
-def wf_to_ssp_key(comp, wf, scale, loc):
-    """
-    Dead stub — not called at runtime.
-
-    The pre-populate loop in _build_component_table_section() calls this function
-    syntactically but immediately discards the return value.  The actual per-SSP key
-    is built inline in that loop.  Kept here to make the loop readable without an
-    unexplained `None` return.
-    """
-    return ""
 
 
 # ─────────────────────────────────────────────────────────
@@ -1889,6 +1921,10 @@ def build_dashboard(
     ]
     q_line_sel = Select(title="Shading:", value="narrow", options=q_line_opts, width=200)
 
+    # ── Global unit selector (mm / cm / m) ─────────────────
+    unit_sel = Select(title="Units:", value="mm",
+                      options=[("mm", "mm"), ("cm", "cm"), ("m", "m")], width=100)
+
     # ── CustomJS callbacks ─────────────────────────────────
     # JS_UPDATE fires when any selector (workflow, SSP, component, scale, location) changes.
     # Key format must match Python's _store_result: "{ssp}|{comp}|{wf}|{scale}|{loc_id}"
@@ -1908,7 +1944,14 @@ def build_dashboard(
         r_circle.visible = r_diamond.visible = r_asterisk.visible = r_triangle.visible = false;
     } else {
         const wide = q_line_sel.value === 'wide';
-        source.data = { years: d.years, med: d.med, lo: wide ? d.vlo : d.lo, hi: wide ? d.vhi : d.hi };
+        const uf_map = {"mm": 1.0, "cm": 0.1, "m": 0.001};
+        const uf = uf_map[unit_sel.value] || 1.0;
+        source.data = {
+            years: d.years,
+            med: d.med.map(v => v * uf),
+            lo:  (wide ? d.vlo : d.lo).map(v => v * uf),
+            hi:  (wide ? d.vhi : d.hi).map(v => v * uf),
+        };
         source.change.emit();
 
         // Colour from SSP
@@ -2000,6 +2043,7 @@ def build_dashboard(
             loc_info=sw["loc_info"],
             location_meta=location_meta_js,
             q_line_sel=q_line_sel,
+            unit_sel=unit_sel,
         )
         cb_update = CustomJS(args=common, code=JS_UPDATE)
         cb_vis    = CustomJS(args=common, code=JS_VISIBILITY)
@@ -2007,6 +2051,7 @@ def build_dashboard(
         for sel in (sw["wf"], sw["ssp"], sw["comp"], sw["scale"], sw["loc"]):
             sel.js_on_change("value", cb_update)
         q_line_sel.js_on_change("value", cb_update)
+        unit_sel.js_on_change("value", cb_update)
         sw["chk"].js_on_change("active", cb_vis)
 
     # ── X / Y range sliders ────────────────────────────────
@@ -2018,7 +2063,7 @@ def build_dashboard(
         step=1, width=600,
     )
     y_slider = RangeSlider(
-        title="Y range (mm)",
+        title="Y range",
         start=YMIN_FIXED, end=YMAX_FIXED,
         value=(y_init_min, y_init_max),
         step=y_step, width=600,
@@ -2031,6 +2076,21 @@ def build_dashboard(
         p.y_range.start = Math.max(s.start, s.value[0]);
         p.y_range.end   = Math.min(s.end,   s.value[1]);
     """))
+    unit_sel.js_on_change("value", CustomJS(
+        args=dict(p=p, y_slider=y_slider, unit_sel=unit_sel, y_axis=p.yaxis[0]),
+        code="""
+        const uf_map = {"mm": 1.0, "cm": 0.1, "m": 0.001};
+        const uf = uf_map[unit_sel.value] || 1.0;
+        const ymin_u = -500 * uf;
+        const ymax_u = 4000 * uf;
+        y_slider.start   = ymin_u;
+        y_slider.end     = ymax_u;
+        y_slider.value   = [ymin_u, ymax_u];
+        p.y_range.start  = ymin_u;
+        p.y_range.end    = ymax_u;
+        y_axis.axis_label = "Sea-level change (" + unit_sel.value + ")";
+        """,
+    ))
 
     # ── Layout rows ────────────────────────────────────────
     ctrl_rows = []
@@ -2042,7 +2102,7 @@ def build_dashboard(
             sw["scale"],
             sw["loc"], sw["loc_info"], sw["chk"],
         ))
-    controls_block = column(*ctrl_rows, row(q_line_sel), x_slider, y_slider)
+    controls_block = column(*ctrl_rows, row(q_line_sel, unit_sel), x_slider, y_slider)
 
     # ── Header ─────────────────────────────────────────────
     desc_head = Div(text=f"""
@@ -2087,7 +2147,7 @@ def build_dashboard(
 <div style="margin-bottom:8px;">
 <br>
   Generated by <code>facts_dashboard.py</code>.
-  Values in <b>mm</b> relative to the experiment base year. Shading = p17&#8211;p83.
+  Values shown in the selected unit (mm by default) relative to the experiment base year. Shading = p17&#8211;p83.
   {_workflow_table_html()}
 </div>
 """, width=900)
@@ -2120,13 +2180,13 @@ def build_dashboard(
 
     # ── STACKED BAR section ────────────────────────────────
     stacked_bar_section = _build_stacked_bar_section(
-        data_dict, years, ssps, wfs, loc_options_all, location_meta_js,
+        data_dict, years, ssps, wfs, loc_options_all, location_meta_js, unit_sel,
     )
 
     # ── TABLE section — hidden in single-NC mode (1×1 grid adds no value) ──
     if not single_nc_mode:
         comp_table_section = _build_component_table_section(
-            data_dict, years, ssps, wfs, loc_options_all, location_meta_js,
+            data_dict, years, ssps, wfs, loc_options_all, location_meta_js, unit_sel,
         )
     else:
         comp_table_section = None
