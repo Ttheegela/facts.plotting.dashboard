@@ -1,8 +1,80 @@
 # CHANGES
 
-This file documents fixes applied to 11 GitHub issues in the [`tt633/facts.plotting.dashboard`](https://github.com/tt633/facts.plotting.dashboard) repo.
+---
 
-Issues **#8, #9, #14, #18** are deferred — they require Box data from Praveen and will be addressed in a follow-up pass.
+## v1.2.0 — HTML size reduction, scenario generalization, and Box data support
+
+### Why v1.2.0?
+
+The most significant change in this release is a **91% reduction in HTML output size** for large datasets.
+Before v1.2.0, a 1030-location run produced a ~664 MB HTML file — too large to open in most browsers.
+The same run now produces a ~56 MB file, making the dashboard practical for real-world Box datasets.
+
+This was achieved by serializing the full data dictionary **once** as a global JavaScript variable
+(`window.FACTS_DATA`) injected into the HTML, instead of duplicating it across every Bokeh CustomJS
+callback (previously 7 copies). All callbacks now read from `window.FACTS_DATA` directly.
+
+Combined with support for non-standard scenario names, new data modes, and UI improvements for
+navigating large location sets, this release marks a meaningful step change from the v1.1.x series.
+
+---
+
+### Change 12 — HTML output size: ~664 MB → ~56 MB for 1030-location runs (closes #10, #18)
+
+**Root cause:** The `data_dict` object (all projection data) was passed as a `CustomJS` argument to
+every callback — Bokeh serialized it once per callback, resulting in 7 duplicate copies embedded in
+the HTML for a 1030-location run (~95 MB × 7 ≈ 664 MB).
+
+**Fix:** Removed `data_dict` from all `CustomJS args=` dicts. Instead, after `save()`, the HTML is
+post-processed to inject `<script>window.FACTS_DATA = {...};</script>` once before `</head>`.
+All four JS callbacks (`JS_UPDATE`, `JS_BAR`, `JS_COMP`, summary table) now read from
+`window.FACTS_DATA[key]` directly.
+
+**Note:** Injection uses `</head>` not `<body>` — Bokeh's INLINE bundle contains the literal string
+`<body>` as part of its minified JS, so injecting before `<body>` would break the bundle.
+
+**Result:** 664 MB → 56 MB (91% reduction) for 1030 locations × 1 SSP.
+
+---
+
+### Change 13 — Scenario generalization: any folder name supported (closes #8, #9)
+
+**Root cause:** All file path templates were hardcoded with `coupling.{ssp}` prefix. Folders named
+`rco.LL.nz`, `rff.LL`, or any non-SSP name were silently skipped.
+
+**Fix:**
+- Added `_scenario_tag_from_folder()` — maps folder name to scenario tag (`coupling.ssp126` → `ssp126`, `rco.LL.nz` → `rco.LL.nz`)
+- Added `_scenario_file_prefix()` — maps tag back to file prefix for NC filename construction
+- Removed `startswith("coupling.ssp")` guards from folder discovery and location list search
+- All file templates updated to use `{prefix}` instead of `coupling.{ssp}`
+
+**Result:** Dashboard works with any scenario naming convention without code changes.
+
+---
+
+### Change 14 — AR6-style confidence file loader (closes #18 partial)
+
+**New flags:** `--confidence-root DIR`, `--confidence-level LEVEL`, `--location-lst FILE`
+
+Loads pre-computed AR6-style quantile NC files with shape `(quantiles=107, years, locations)`.
+Quantile indices used: p05=7, p17=20, p50=53, p83=86, p95=99.
+Component name mapping: `GIS` → `GrIS`, `verticallandmotion` → `vlm`.
+Workflow tag: `"conf"`. Location names resolved from `location.lst` if found or explicitly provided.
+
+---
+
+### Change 15 — Location search with pinned selections for bar chart
+
+Selected locations are pinned to the top of the list (checked). Unselected locations appear below,
+filtered by the search query. Typing auto-adds matching locations to the pinned set. Clearing the
+search restores pinned selections while showing the full unselected list below. Bar chart starts
+blank — no locations are pre-selected on load.
+
+---
+
+This file also documents the earlier v1.1.x fixes below.
+
+This file documents fixes applied to GitHub issues in the [`Ttheegela/facts.plotting.dashboard`](https://github.com/Ttheegela/facts.plotting.dashboard) repo.
 
 ---
 
