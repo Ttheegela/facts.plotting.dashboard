@@ -73,6 +73,7 @@ DASHBOARD FEATURES
 
 import argparse
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -85,7 +86,8 @@ from bokeh.io import save
 from bokeh.layouts import column, row
 from bokeh.models import (
     Checkbox, CheckboxGroup, ColumnDataSource, CustomJS, DataTable, Div,
-    CustomJSTickFormatter, FixedTicker, HTMLTemplateFormatter, HoverTool, Range1d, RangeSlider, Select, TableColumn, Toggle,
+    CustomJSTickFormatter, FixedTicker, GlyphRenderer, HTMLTemplateFormatter,
+    HoverTool, Legend, LegendItem, Range1d, RangeSlider, Select, TableColumn, Toggle,
 )
 from bokeh.plotting import figure
 from bokeh.resources import INLINE   # embeds all JS/CSS inline so the HTML is self-contained
@@ -106,12 +108,11 @@ log = logging.getLogger("facts_dashboard")
 # ─────────────────────────────────────────────────────────
 
 SSP_COLORS = {
-    "ssp119": "#1d6ea8",   # deep blue  — lowest emissions
-    "ssp126": "#56b4e9",   # sky blue
-    "ssp245": "#f0e442",   # yellow
-    "ssp370": "#e69500",   # amber/orange
-    "ssp534": "#cc79a7",   # mauve
-    "ssp585": "#d73027",   # red        — highest emissions
+    "ssp119": "#00adcf",   # rgb(0, 173, 207)
+    "ssp126": "#173c66",   # rgb(23, 60, 102)
+    "ssp245": "#f79420",   # rgb(247, 148, 32)
+    "ssp370": "#e71d25",   # rgb(231, 29, 37)
+    "ssp585": "#951b1e",   # rgb(149, 27, 30)
 }
 _FALLBACK_COLORS = ["#4dac26", "#b8e186", "#f7f7f7", "#e9a3c9", "#c51b7d", "#542788"]
 
@@ -230,11 +231,15 @@ COMPONENT_LABELS = {
 # Index map used throughout: 0=p05, 1=p17, 2=p50(median), 3=p83, 4=p95
 QUANTILES = [0.05, 0.17, 0.50, 0.83, 0.95]
 
+def _r1(arr):
+    """Round a float array to 1 decimal place (mm precision). Used throughout for data compaction."""
+    return [round(float(v), 1) for v in arr]
+
 # Fixed slider bounds
 XMIN_FIXED = 2020
 XMAX_FIXED = 2300
 YMIN_FIXED = -500
-YMAX_FIXED = 6000
+YMAX_FIXED = 4000
 
 # Bar chart: max locations to show by default (Bob: "fewer tide gauges for better comparison")
 BAR_DEFAULT_N_LOCS = 8
@@ -386,7 +391,8 @@ def load_location_list(entries: list) -> list:
     for _, _, exp_dir in entries:
         p = exp_dir / "location.lst"
         if p.exists():
-            df = pd.read_csv(p, sep=r"\s+", header=None, names=["name", "id", "lat", "lon"])
+            df = pd.read_csv(p, sep=r"\s+", header=None, names=["name", "id", "lat", "lon"],
+                             engine="python", on_bad_lines="skip")
             log.info("Loaded %d locations from %s", len(df), p)
             return df.to_dict("records")
     log.warning("No location.lst found in any experiment directory")
@@ -477,7 +483,6 @@ def _store_result(data_dict, location_meta, result, key_prefix):
         # Key format: "{ssp}|{component}|{wf}|{scale}|{loc_id}"
         # loc_id = -1 for global mean SL; positive int for tide gauge station
         key = f"{key_prefix}|{loc_id}"
-        def _r1(arr): return [round(float(v), 1) for v in arr]
         data_dict[key] = {
             "years": result["years"],
             "med":   _r1(q[2, :, li]),   # p50 — median projection
@@ -496,6 +501,207 @@ def _store_result(data_dict, location_meta, result, key_prefix):
                 "lat": _safe_coord(lats, li),
                 "lon": _safe_coord(lons, li),
             }
+
+
+def _infer_component_from_stem(stem: str) -> str:
+    """
+    Extract the sea-level component from a FACTS .nc filename stem.
+
+    File pattern: coupling.sspXXX.module.model.COMPONENT_{scale}sl
+    The component token sits immediately before _{scale}sl at the end.
+
+    Matches against known component names first; falls back to the raw token.
+    """
+    last = stem.split(".")[-1]                       # e.g. "GrIS_globalsl"
+    for suffix in ("_globalsl", "_localsl", "_global", "_local"):
+        if last.lower().endswith(suffix):
+            raw = last[: len(last) - len(suffix)]    # e.g. "GrIS"
+            break
+    else:
+        raw = last
+
+    # Normalise: strip sub-component prefix (e.g. "icesheets_AIS" → "AIS")
+    for k in ("total", "AIS", "GrIS", "glaciers", "sterodynamics",
+              "landwaterstorage", "vlm", "verticallandmotion"):
+        if k.lower() in raw.lower():
+            # Map known aliases
+            return {
+                "verticallandmotion": "vlm",
+                "icesheets_AIS": "AIS", "icesheets_GIS": "GrIS",
+                "GIS": "GrIS",
+            }.get(raw, k)
+    return raw   # unknown component — use as-is
+
+
+def _infer_wf_from_stem(stem: str) -> str:
+    """
+    Heuristically map a FACTS filename stem to the closest known workflow ID.
+
+    Uses the model/module tokens in the filename.  The mapping is approximate
+    for multi-model workflows (wf2e/wf3e share emulandice for GrIS).
+    """
+    s = stem.lower()
+    if "bamber19" in s:
+        return "wf4"
+    if "deconto21" in s:
+        return "wf3e"
+    if "larmip" in s:
+        return "wf2e"
+    if "fittedismip" in s:
+        return "wf1f"
+    if "ipccar5" in s:
+        return "wf1f"
+    # emulandice is used by wf1e, wf2e, wf3e — default to wf1e
+    return "wf1e"
+
+
+def _find_best_location_lst(nc_path: Path, loc_ids_in_file: list) -> dict:
+    """
+    Find the location.lst that covers the most location IDs present in the NC file.
+
+    Searches:
+      1. nc_path.parent         (same folder as the file)
+      2. nc_path.parent.parent  (e.g. coupling.ssp585/)
+      3. All coupling.ssp* sibling directories one level up (exp_root level)
+
+    Picks the file with the most ID matches against loc_ids_in_file.
+    This handles the case where the file's own SSP directory has a partial
+    location.lst (e.g. only 1 station) while a sibling SSP directory has the
+    full 24-station list.
+
+    Returns:
+        {int(loc_id): pandas row} for the best-matching file, or {} if none found.
+    """
+    target_ids = set(int(x) for x in loc_ids_in_file)
+    candidates = []
+
+    search_dirs = [nc_path.parent, nc_path.parent.parent]
+    # Also scan all sibling coupling.ssp* directories at exp_root level
+    exp_root_candidate = nc_path.parent.parent.parent
+    if exp_root_candidate.is_dir():
+        for sibling in sorted(exp_root_candidate.iterdir()):
+            if sibling.is_dir() and sibling.name.startswith("coupling.ssp"):
+                search_dirs.append(sibling)
+
+    for d in search_dirs:
+        lst = d / "location.lst"
+        if not lst.exists():
+            continue
+        try:
+            df = pd.read_csv(lst, sep=r"\s+", header=None, names=["name", "id", "lat", "lon"])
+            matched = len(set(int(x) for x in df["id"]) & target_ids)
+            candidates.append((matched, lst, df))
+        except Exception:
+            pass
+
+    if not candidates:
+        return {}
+
+    # Pick the candidate with the most matching IDs
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    best_match, best_lst, best_df = candidates[0]
+    log.info("[single-nc] location.lst: %s  (%d / %d IDs matched)",
+             best_lst, best_match, len(target_ids))
+    return {int(row["id"]): row for _, row in best_df.iterrows()}
+
+
+def load_single_nc(nc_path: Path) -> dict:
+    """
+    Load a single FACTS .nc file and return structures compatible with build_dashboard().
+
+    Infers SSP, component, workflow, and scale from the filename, reads all
+    tide gauge (or global) time series, computes 5 quantiles, and finds the
+    best-matching location.lst by scanning sibling SSP directories.
+
+    The COMPONENTS and COMPONENT_LABELS globals are narrowed to only the
+    detected component so that all dashboard dropdowns and the component table
+    only show the data that is actually present in the file.
+
+    Returns:
+        dict with keys: data_dict, years, locations, location_meta, ssps, wfs, comp
+
+    Example:
+        result = load_single_nc(Path("coupling.ssp585.emuGrIS.emulandice.GrIS_globalsl.nc"))
+        build_dashboard(result["data_dict"], result["years"], result["locations"], ...)
+    """
+    stem  = nc_path.stem
+    parts = stem.split(".")
+
+    # ── Parse filename ───────────────────────────────────────
+    ssp   = next((p for p in parts if re.match(r"ssp\d+", p, re.IGNORECASE)), "ssp_unknown")
+    scale = "global" if "global" in stem.lower() else "local"
+    comp  = _infer_component_from_stem(stem)
+    wf    = _infer_wf_from_stem(stem)
+
+    log.info("[single-nc] file      : %s", nc_path.name)
+    log.info("[single-nc] SSP=%s  component=%s  workflow=%s  scale=%s", ssp, comp, wf, scale)
+
+    # ── Narrow global COMPONENTS to only what this file provides ──
+    # This fixes the component table and all dropdowns showing all 7 components
+    # when only 1 has data.
+    label = COMPONENT_LABELS.get(comp, comp)
+    COMPONENTS[:] = [comp]            # in-place so all references see the change
+    COMPONENT_LABELS.clear()
+    COMPONENT_LABELS[comp] = label
+
+    # ── Quantiles ────────────────────────────────────────────
+    result  = compute_quantiles(nc_path)
+    years   = result["years"]
+    loc_ids = result["locations"]     # list of int location IDs from the file
+    lats    = result["lat"]
+    lons    = result["lon"]
+    q       = result["q"]             # (5, n_years, n_locs)
+
+    # ── Find best location.lst (searches sibling SSP dirs) ───
+    loc_meta_from_lst = _find_best_location_lst(nc_path, loc_ids)
+
+    # ── Build data_dict, locations, location_meta ────────────
+    def _safe(v):
+        try:
+            return None if (v is None or np.isnan(v) or np.isinf(v)) else v
+        except (TypeError, ValueError):
+            return None
+
+    data_dict:     dict = {}
+    locations:     list = []
+    location_meta: dict = {}
+
+    for li, raw_lid in enumerate(loc_ids):
+        loc_id = int(raw_lid)
+
+        if loc_id in loc_meta_from_lst:
+            row  = loc_meta_from_lst[loc_id]
+            name = str(row["name"])
+            lat  = float(row["lat"])
+            lon  = float(row["lon"])
+        else:
+            name = "Global mean" if loc_id == -1 else f"ID {loc_id}"
+            lat  = _safe(float(lats[li])) if li < len(lats) else None
+            lon  = _safe(float(lons[li])) if li < len(lons) else None
+
+        locations.append({"name": name, "id": loc_id, "lat": lat, "lon": lon})
+        location_meta[loc_id] = {"lat": _safe(lat), "lon": _safe(lon)}
+
+        key = f"{ssp}|{comp}|{wf}|{scale}|{loc_id}"
+        data_dict[key] = {
+            "years": years,
+            "vlo":   _r1(q[0, :, li]),
+            "lo":    _r1(q[1, :, li]),
+            "med":   _r1(q[2, :, li]),
+            "hi":    _r1(q[3, :, li]),
+            "vhi":   _r1(q[4, :, li]),
+        }
+
+    log.info("[single-nc] Loaded %d location(s), %d time steps", len(loc_ids), len(years))
+    return {
+        "data_dict":     data_dict,
+        "years":         years,
+        "locations":     locations,
+        "location_meta": location_meta,
+        "ssps":          [ssp],
+        "wfs":           [wf],
+        "comp":          comp,
+    }
 
 
 def precompute_all(entries: list, wfs: list) -> tuple:
@@ -880,6 +1086,7 @@ def _build_component_table_section(
     wfs:              list,
     loc_options_all:  list,
     location_meta_js: dict,
+    unit_sel:         object = None,
 ) -> object:
     """
     Build the interactive component breakdown TABLE (Bokeh DataTable).
@@ -908,12 +1115,6 @@ def _build_component_table_section(
     default_scale    = "global"
     default_loc_int  = -1   # global mean SL — matches professor's reference table default
     comps = COMPONENTS      # [total, AIS, GrIS, glaciers, sterodynamics, landwaterstorage, vlm]
-
-    def _comp_cell(comp, wf, year_int, scale, loc_int):
-        lookup_loc = -1 if scale == "global" else loc_int
-        key = f"{wf_to_ssp_key(comp, wf, scale, lookup_loc)}"  # placeholder; filled per SSP below
-        # (actual per-SSP lookup done in the loop below)
-        return None  # unused; loop below handles it
 
     # Pre-populate for default selections
     init_data = {"component": list(comps)}
@@ -986,6 +1187,11 @@ def _build_component_table_section(
     // Global SL uses loc_id=-1 (only one location in global .nc files)
     const loc_val   = (scale_val === "global") ? -1 : parseInt(loc_sel.value);
 
+    const uf_map = {"mm": 1.0, "cm": 0.1, "m": 0.001};
+    const uf = uf_map[unit_sel.value] || 1.0;
+    const dp_map = {"mm": 1, "cm": 2, "m": 4};
+    const dp = dp_map[unit_sel.value] || 1;
+
     const new_data = { component: comps.slice() };
     for (let j = 0; j < ssps.length; j++) { new_data[ssps[j]] = []; }
 
@@ -998,12 +1204,14 @@ def _build_component_table_section(
             if (!d) { new_data[ssp].push(""); continue; }
             const idx = d.years.indexOf(year_val);
             if (idx === -1) { new_data[ssp].push(""); continue; }
-            const med = d.med[idx], lo = d.lo[idx], hi = d.hi[idx];
-            const vlo = (d.vlo !== undefined) ? d.vlo[idx] : null;
-            const vhi = (d.vhi !== undefined) ? d.vhi[idx] : null;
-            let cell = med.toFixed(1) + "\\n(" + lo.toFixed(1) + ", " + hi.toFixed(1) + ")";
+            const med = d.med[idx] * uf, lo = d.lo[idx] * uf, hi = d.hi[idx] * uf;
+            const vlo_raw = (d.vlo !== undefined) ? d.vlo[idx] : null;
+            const vhi_raw = (d.vhi !== undefined) ? d.vhi[idx] : null;
+            const vlo = vlo_raw !== null ? vlo_raw * uf : null;
+            const vhi = vhi_raw !== null ? vhi_raw * uf : null;
+            let cell = med.toFixed(dp) + "\\n(" + lo.toFixed(dp) + ", " + hi.toFixed(dp) + ")";
             if (vlo !== null && vhi !== null) {
-                cell += "\\n[" + vlo.toFixed(1) + ", " + vhi.toFixed(1) + "]";
+                cell += "\\n[" + vlo.toFixed(dp) + ", " + vhi.toFixed(dp) + "]";
             }
             new_data[ssp].push(cell);
         }
@@ -1019,6 +1227,7 @@ def _build_component_table_section(
             wf_sel=wf_sel, year_sel=year_sel,
             scale_sel=scale_sel, loc_sel=loc_sel,
             ssps=ssps, comps=comps,
+            unit_sel=unit_sel,
         ),
         code=JS_COMP,
     )
@@ -1026,6 +1235,7 @@ def _build_component_table_section(
     year_sel.js_on_change("value",  cb)
     scale_sel.js_on_change("value", cb)
     loc_sel.js_on_change("value",   cb)
+    unit_sel.js_on_change("value",  cb)
 
     comp_head = Div(text="""
 <div style="margin-top:32px;margin-bottom:6px;">
@@ -1047,6 +1257,7 @@ def _build_stacked_bar_section(
     wfs:              list,
     loc_options_all:  list,
     location_meta_js: dict,
+    unit_sel:         object = None,
 ) -> object:
     """
     Build the grouped bar chart section.
@@ -1058,7 +1269,7 @@ def _build_stacked_bar_section(
     Controls: workflow, component, scale, year, quantile.
     HoverTool shows location name, coords, SSP label, and value.
     """
-    SSP_ORDER = ["ssp119", "ssp126", "ssp245", "ssp370", "ssp534", "ssp585"]
+    SSP_ORDER = ["ssp119", "ssp126", "ssp245", "ssp370", "ssp585"]
     plot_ssps = [s for s in SSP_ORDER if s in ssps] + [s for s in ssps if s not in SSP_ORDER]
     n_ssps    = len(plot_ssps)
 
@@ -1185,7 +1396,6 @@ def _build_stacked_bar_section(
     p_bar.xaxis.major_label_orientation = 1.0
 
     # -- Legend: one entry per SSP (manual, outside plot) --
-    from bokeh.models import Legend, LegendItem, GlyphRenderer
     legend_items = []
     for si, ssp in enumerate(plot_ssps):
         color = SSP_COLORS.get(ssp, _FALLBACK_COLORS[si % len(_FALLBACK_COLORS)])
@@ -1269,12 +1479,18 @@ def _build_stacked_bar_section(
     # -- CustomJS callback --
     Q_LABELS_JS = {v: lbl for v, lbl in q_opts}
 
+    # Local unit selector for the bar chart section (stays in sync with the line plot one)
+    unit_sel_bar = Select(title="Units:", value="mm",
+                          options=[("mm", "mm"), ("cm", "cm"), ("m", "m")], width=100)
+
     JS_BAR = """
     const wf    = wf_sel.value;
     const comp  = comp_sel.value;
     const scale = scale_sel.value;
     const year  = parseInt(year_sel.value);
     const q_key = q_sel.value;
+    const uf_map = {"mm": 1.0, "cm": 0.1, "m": 0.001};
+    const uf = uf_map[unit_sel.value] || 1.0;
 
     // Active SSPs from checkbox
     const active_ssp_set = new Set(chk_ssp.active);
@@ -1315,7 +1531,7 @@ def _build_stacked_bar_section(
                 if (idx !== -1 && d[q_key] !== undefined) val = d[q_key][idx];
             }
             xs.push(x);
-            ys.push(val);
+            ys.push(val * uf);
             colors.push(ssp_color_map[ssp]);
             ssp_labels.push(ssp_label_map[ssp] || ssp);
             loc_names_out.push(loc_names_arr[li]);
@@ -1349,7 +1565,8 @@ def _build_stacked_bar_section(
     const q_label = q_label_map[q_key] || q_key;
     p_bar.title.text = "RSL Projections at " + year +
         " — SSP Comparison per Tide Gauge" +
-        "  (" + wf + ", " + comp + ", " + scale + ", " + q_label + ")";
+        "  (" + wf + ", " + comp + ", " + scale + ", " + q_label + ", " + unit_sel.value + ")";
+    y_axis_bar.axis_label = "RSL Change (" + unit_sel.value + ")";
     """
 
     cb = CustomJS(
@@ -1376,16 +1593,19 @@ def _build_stacked_bar_section(
                              for i, s in enumerate(plot_ssps)},
             ssp_label_map = {s: SSP_LABELS.get(s, s) for s in plot_ssps},
             q_label_map   = Q_LABELS_JS,
+            unit_sel      = unit_sel,
+            y_axis_bar    = p_bar.yaxis[0],
         ),
         code=JS_BAR,
     )
-    wf_sel.js_on_change("value",     cb)
-    comp_sel.js_on_change("value",   cb)
-    scale_sel.js_on_change("value",  cb)
-    year_sel.js_on_change("value",   cb)
-    q_sel.js_on_change("value",      cb)
-    chk_ssp.js_on_change("active", cb)
-    chk_loc.js_on_change("active", cb)
+    wf_sel.js_on_change("value",       cb)
+    comp_sel.js_on_change("value",     cb)
+    scale_sel.js_on_change("value",    cb)
+    year_sel.js_on_change("value",     cb)
+    q_sel.js_on_change("value",        cb)
+    chk_ssp.js_on_change("active",     cb)
+    chk_loc.js_on_change("active",     cb)
+    unit_sel.js_on_change("value",     cb)   # driven by the shared line-plot widget
 
     # -- Y-axis range slider (same pattern as line plot section) --
     bar_ys = [v for v in init_data["y"] if v is not None]
@@ -1399,7 +1619,7 @@ def _build_stacked_bar_section(
     p_bar.y_range = Range1d(bar_y_init_min, bar_y_init_max)
 
     y_bar_slider = RangeSlider(
-        title="Y range (mm)",
+        title="Y range",
         start=YMIN_FIXED, end=YMAX_FIXED,
         value=(bar_y_init_min, bar_y_init_max),
         step=bar_y_step, width=600,
@@ -1410,6 +1630,35 @@ def _build_stacked_bar_section(
         p.y_range.start = Math.max(s.start, s.value[0]);
         p.y_range.end   = Math.min(s.end,   s.value[1]);
         """,
+    ))
+    # Bar axis label + slider reset — driven by the shared unit_sel widget
+    unit_sel.js_on_change("value", CustomJS(
+        args=dict(p=p_bar, y_bar_slider=y_bar_slider, unit_sel=unit_sel,
+                  y_axis_bar=p_bar.yaxis[0]),
+        code="""
+        const uf_map = {"mm": 1.0, "cm": 0.1, "m": 0.001};
+        const uf = uf_map[unit_sel.value] || 1.0;
+        const ymin_u = -500 * uf;
+        const ymax_u = 4000 * uf;
+        y_bar_slider.start      = ymin_u;
+        y_bar_slider.end        = ymax_u;
+        y_bar_slider.value      = [ymin_u, ymax_u];
+        p.y_range.start         = ymin_u;
+        p.y_range.end           = ymax_u;
+        y_axis_bar.axis_label   = "RSL Change (" + unit_sel.value + ")";
+        """,
+    ))
+
+    # ── unit_sel_bar is a display-only mirror — syncs both ways with unit_sel ──
+    # Bar → shared: user changes bar dropdown → update shared widget → all callbacks fire
+    unit_sel_bar.js_on_change("value", CustomJS(
+        args=dict(other=unit_sel),
+        code="if (other.value !== cb_obj.value) other.value = cb_obj.value;",
+    ))
+    # Shared → bar: shared widget changes (e.g. from line plot) → update bar display
+    unit_sel.js_on_change("value", CustomJS(
+        args=dict(other=unit_sel_bar),
+        code="if (other.value !== cb_obj.value) other.value = cb_obj.value;",
     ))
 
     ssp_chk_label = Div(
@@ -1430,24 +1679,12 @@ def _build_stacked_bar_section(
 
     return column(
         bar_head,
-        row(wf_sel, comp_sel, scale_sel, year_sel, q_sel),
+        row(wf_sel, comp_sel, scale_sel, year_sel, q_sel, unit_sel_bar),
         row(ssp_chk_label, chk_ssp),
         row(column(loc_toggle, chk_loc)),
         y_bar_slider,
         p_bar,
     )
-
-
-def wf_to_ssp_key(comp, wf, scale, loc):
-    """
-    Dead stub — not called at runtime.
-
-    The pre-populate loop in _build_component_table_section() calls this function
-    syntactically but immediately discards the return value.  The actual per-SSP key
-    is built inline in that loop.  Kept here to make the loop readable without an
-    unexplained `None` return.
-    """
-    return ""
 
 
 # ─────────────────────────────────────────────────────────
@@ -1463,19 +1700,24 @@ def build_dashboard(
     wfs:           list,
     output_path:   Path,
     title:         str = "FACTS Sea-Level Projections",
+    single_nc_mode: bool = False,
 ):
     """
     Build and save the Bokeh interactive dashboard HTML.
 
     Args:
-        data_dict:     Keyed by "{ssp}|{component}|{wf}|{scale}|{loc_id}".
-        years:         Reference year list for axis range.
-        locations:     List of dicts from location.lst (name, id, lat, lon).
-        location_meta: Dict of {int loc_id: {lat, lon}}.
-        ssps:          List of SSP tag strings.
-        wfs:           List of workflow ID strings.
-        output_path:   Path to write the output HTML file.
-        title:         Dashboard title string.
+        data_dict:      Keyed by "{ssp}|{component}|{wf}|{scale}|{loc_id}".
+        years:          Reference year list for axis range.
+        locations:      List of dicts from location.lst (name, id, lat, lon).
+        location_meta:  Dict of {int loc_id: {lat, lon}}.
+        ssps:           List of SSP tag strings.
+        wfs:            List of workflow ID strings.
+        output_path:    Path to write the output HTML file.
+        title:          Dashboard title string.
+        single_nc_mode: When True, adapts the layout for a single-NC-file load:
+                        cycles slots through different locations, disables dead
+                        dropdowns, adds a metadata banner, and hides the
+                        component table (which would be a 1×1 grid).
 
     Example:
         build_dashboard(data_dict, years, locations, location_meta,
@@ -1513,14 +1755,30 @@ def build_dashboard(
         loc_options_all.append((str(lid), label))
 
     # ── Default slot configs ────────────────────────────────
+    # In single-NC mode there is only 1 SSP/workflow/component — cycle locations
+    # so the 6 slots show 6 different stations instead of 6 identical lines.
+    # In multi-file mode cycle SSPs as before.
     first_loc = str(all_loc_ids[1]) if len(all_loc_ids) > 1 else str(all_loc_ids[0])
+    # Collect non-global loc IDs in order for single-NC location cycling
+    local_loc_ids = [lid for lid in all_loc_ids if lid != -1]
+
     slot_defaults = []
     for i in range(6):
-        ssp_d   = ssps[i % len(ssps)]
-        wf_d    = wfs[0]
-        comp_d  = "total"
-        scale_d = "local"
-        loc_d   = first_loc
+        if single_nc_mode:
+            # Cycle through different locations; SSP/wf/comp fixed to the one available
+            cycle_lid = local_loc_ids[i % len(local_loc_ids)] if local_loc_ids else all_loc_ids[0]
+            loc_d   = str(cycle_lid)
+            ssp_d   = ssps[0]
+            wf_d    = wfs[0]
+            comp_d  = COMPONENTS[0]
+            scale_d = "local"
+        else:
+            ssp_d   = ssps[i % len(ssps)]
+            wf_d    = wfs[0]
+            comp_d  = "total"
+            scale_d = "local"
+            loc_d   = first_loc
+
         key = f"{ssp_d}|{comp_d}|{wf_d}|{scale_d}|{loc_d}"
         if key not in data_dict:
             key = next((k for k in data_dict if k.startswith(f"{ssp_d}|")), next(iter(data_dict)))
@@ -1626,9 +1884,14 @@ def build_dashboard(
         lon_v    = loc_info.get("lon")
 
         n = i + 1
-        wf_sel   = Select(title="Workflow",   value=sd["wf"],    options=wf_opts,    width=170)
-        ssp_sel  = Select(title="SSP",        value=sd["ssp"],   options=ssp_opts,   width=140)
-        comp_sel = Select(title="Component",  value=sd["comp"],  options=comp_opts,  width=200)
+        # In single-NC mode, dropdowns with only 1 option are disabled so the user
+        # doesn't waste time trying to switch something that has no alternatives.
+        _dis_wf   = single_nc_mode and len(wf_opts)   == 1
+        _dis_ssp  = single_nc_mode and len(ssp_opts)  == 1
+        _dis_comp = single_nc_mode and len(comp_opts) == 1
+        wf_sel   = Select(title="Workflow",   value=sd["wf"],    options=wf_opts,    width=170, disabled=_dis_wf)
+        ssp_sel  = Select(title="SSP",        value=sd["ssp"],   options=ssp_opts,   width=140, disabled=_dis_ssp)
+        comp_sel = Select(title="Component",  value=sd["comp"],  options=comp_opts,  width=200, disabled=_dis_comp)
         scale_sel= Select(title="Scale",      value=sd["scale"], options=scale_opts, width=140)
         loc_sel  = Select(title="Location",   value=sd["loc"],   options=loc_options_all, width=240)
 
@@ -1653,13 +1916,14 @@ def build_dashboard(
 
     # ── Global quantile selector for line plot ─────────────
     q_line_opts = [
-        ("med", "Median (p50)"),
-        ("vlo", "5th percentile"),
-        ("lo",  "17th percentile"),
-        ("hi",  "83rd percentile"),
-        ("vhi", "95th percentile"),
+        ("narrow", "17th–83rd percentile"),
+        ("wide",   "5th–95th percentile"),
     ]
-    q_line_sel = Select(title="Line quantile:", value="med", options=q_line_opts, width=200)
+    q_line_sel = Select(title="Shading:", value="narrow", options=q_line_opts, width=200)
+
+    # ── Global unit selector (mm / cm / m) ─────────────────
+    unit_sel = Select(title="Units:", value="mm",
+                      options=[("mm", "mm"), ("cm", "cm"), ("m", "m")], width=100)
 
     # ── CustomJS callbacks ─────────────────────────────────
     # JS_UPDATE fires when any selector (workflow, SSP, component, scale, location) changes.
@@ -1679,9 +1943,15 @@ def build_dashboard(
         band.visible = r_solid.visible = r_dashed.visible = r_dotted.visible =
         r_circle.visible = r_diamond.visible = r_asterisk.visible = r_triangle.visible = false;
     } else {
-        const q_key = q_line_sel.value;
-        const center = (d[q_key] !== undefined) ? d[q_key] : d.med;
-        source.data = { years: d.years, med: center, lo: d.lo, hi: d.hi };
+        const wide = q_line_sel.value === 'wide';
+        const uf_map = {"mm": 1.0, "cm": 0.1, "m": 0.001};
+        const uf = uf_map[unit_sel.value] || 1.0;
+        source.data = {
+            years: d.years,
+            med: d.med.map(v => v * uf),
+            lo:  (wide ? d.vlo : d.lo).map(v => v * uf),
+            hi:  (wide ? d.vhi : d.hi).map(v => v * uf),
+        };
         source.change.emit();
 
         // Colour from SSP
@@ -1773,6 +2043,7 @@ def build_dashboard(
             loc_info=sw["loc_info"],
             location_meta=location_meta_js,
             q_line_sel=q_line_sel,
+            unit_sel=unit_sel,
         )
         cb_update = CustomJS(args=common, code=JS_UPDATE)
         cb_vis    = CustomJS(args=common, code=JS_VISIBILITY)
@@ -1780,6 +2051,7 @@ def build_dashboard(
         for sel in (sw["wf"], sw["ssp"], sw["comp"], sw["scale"], sw["loc"]):
             sel.js_on_change("value", cb_update)
         q_line_sel.js_on_change("value", cb_update)
+        unit_sel.js_on_change("value", cb_update)
         sw["chk"].js_on_change("active", cb_vis)
 
     # ── X / Y range sliders ────────────────────────────────
@@ -1791,7 +2063,7 @@ def build_dashboard(
         step=1, width=600,
     )
     y_slider = RangeSlider(
-        title="Y range (mm)",
+        title="Y range",
         start=YMIN_FIXED, end=YMAX_FIXED,
         value=(y_init_min, y_init_max),
         step=y_step, width=600,
@@ -1804,6 +2076,21 @@ def build_dashboard(
         p.y_range.start = Math.max(s.start, s.value[0]);
         p.y_range.end   = Math.min(s.end,   s.value[1]);
     """))
+    unit_sel.js_on_change("value", CustomJS(
+        args=dict(p=p, y_slider=y_slider, unit_sel=unit_sel, y_axis=p.yaxis[0]),
+        code="""
+        const uf_map = {"mm": 1.0, "cm": 0.1, "m": 0.001};
+        const uf = uf_map[unit_sel.value] || 1.0;
+        const ymin_u = -500 * uf;
+        const ymax_u = 4000 * uf;
+        y_slider.start   = ymin_u;
+        y_slider.end     = ymax_u;
+        y_slider.value   = [ymin_u, ymax_u];
+        p.y_range.start  = ymin_u;
+        p.y_range.end    = ymax_u;
+        y_axis.axis_label = "Sea-level change (" + unit_sel.value + ")";
+        """,
+    ))
 
     # ── Layout rows ────────────────────────────────────────
     ctrl_rows = []
@@ -1815,7 +2102,7 @@ def build_dashboard(
             sw["scale"],
             sw["loc"], sw["loc_info"], sw["chk"],
         ))
-    controls_block = column(*ctrl_rows, row(q_line_sel), x_slider, y_slider)
+    controls_block = column(*ctrl_rows, row(q_line_sel, unit_sel), x_slider, y_slider)
 
     # ── Header ─────────────────────────────────────────────
     desc_head = Div(text=f"""
@@ -1830,7 +2117,12 @@ def build_dashboard(
 """, width=900)
 
     # ── Legend ─────────────────────────────────────────────
-    legend_html = """
+    _ssp_color_entries = " &nbsp;\n    ".join(
+        f'<span style="color:{SSP_COLORS.get(s, "#808080")}">&#9632;</span> {SSP_LABELS.get(s, s)}'
+        for s in ssps
+        if s in SSP_COLORS
+    )
+    legend_html = f"""
 <div style="margin-top:8px;line-height:2.0;font-size:13px;">
   <div>
     <b>Component legend:</b> &nbsp;
@@ -1844,12 +2136,7 @@ def build_dashboard(
   </div>
   <div>
     <b>SSP colours:</b> &nbsp;
-    <span style="color:#1d6ea8">&#9632;</span> SSP1-1.9 &nbsp;
-    <span style="color:#56b4e9">&#9632;</span> SSP1-2.6 &nbsp;
-    <span style="color:#f0e442">&#9632;</span> SSP2-4.5 &nbsp;
-    <span style="color:#e69500">&#9632;</span> SSP3-7.0 &nbsp;
-    <span style="color:#d73027">&#9632;</span> SSP5-8.5 &nbsp;
-    <span style="color:#cc79a7">&#9632;</span> SSP5-3.4OS
+    {_ssp_color_entries}
   </div>
 </div>
 """
@@ -1860,29 +2147,63 @@ def build_dashboard(
 <div style="margin-bottom:8px;">
 <br>
   Generated by <code>facts_dashboard.py</code>.
-  Values in <b>mm</b> relative to the experiment base year. Shading = p17&#8211;p83.
+  Values shown in the selected unit (mm by default) relative to the experiment base year. Shading = p17&#8211;p83.
   {_workflow_table_html()}
 </div>
 """, width=900)
 
+    # ── Single-NC metadata banner ──────────────────────────
+    if single_nc_mode:
+        ssp_label  = SSP_LABELS.get(ssps[0], ssps[0])
+        comp_label = COMPONENT_LABELS.get(COMPONENTS[0], COMPONENTS[0])
+        wf_label   = WF_LABELS.get(wfs[0], wfs[0])
+        yr_start   = years[0] if years else "?"
+        yr_end     = years[-1] if years else "?"
+        n_locs     = len([lid for lid in all_loc_ids if lid != -1])
+        single_nc_banner = Div(text=f"""
+<div style="background:#f0f4fa;border:1px solid #c5d3e8;border-radius:5px;
+            padding:10px 14px;margin-bottom:10px;font-size:13px;font-family:Arial,sans-serif;">
+  <b>Single-file mode</b> &mdash; auto-detected from filename:<br>
+  &nbsp;&nbsp;<b>SSP:</b> {ssp_label} &nbsp;|&nbsp;
+  <b>Component:</b> {comp_label} &nbsp;|&nbsp;
+  <b>Workflow:</b> {wf_label}<br>
+  &nbsp;&nbsp;<b>Year range:</b> {yr_start}&ndash;{yr_end} &nbsp;|&nbsp;
+  <b>Locations:</b> {n_locs} tide gauge stations<br>
+  <span style="color:#666;font-size:11px;">
+    Workflow, SSP, and Component selectors are fixed to the values above.
+    Use the Location selector in each line slot to compare different stations.
+  </span>
+</div>
+""", width=950)
+    else:
+        single_nc_banner = None
+
     # ── STACKED BAR section ────────────────────────────────
     stacked_bar_section = _build_stacked_bar_section(
-        data_dict, years, ssps, wfs, loc_options_all, location_meta_js,
+        data_dict, years, ssps, wfs, loc_options_all, location_meta_js, unit_sel,
     )
 
-    # ── TABLE section ──────────────────────────────────────
-    comp_table_section = _build_component_table_section(
-        data_dict, years, ssps, wfs, loc_options_all, location_meta_js,
-    )
+    # ── TABLE section — hidden in single-NC mode (1×1 grid adds no value) ──
+    if not single_nc_mode:
+        comp_table_section = _build_component_table_section(
+            data_dict, years, ssps, wfs, loc_options_all, location_meta_js, unit_sel,
+        )
+    else:
+        comp_table_section = None
 
-    dashboard = column(
-        desc_head, controls_block, p, text_legend,
-        stacked_bar_section,
-        comp_table_section,
-        citation,
-    )
+    layout_items = [desc_head]
+    if single_nc_banner:
+        layout_items.append(single_nc_banner)
+    layout_items += [controls_block, p, text_legend]
+    if comp_table_section:
+        layout_items.append(comp_table_section)
+    layout_items.append(stacked_bar_section)
+    layout_items.append(citation)
+
+    dashboard = column(*layout_items)
     save(dashboard, filename=str(output_path), resources=INLINE, title=title)
     log.info("Dashboard saved → %s", output_path.resolve())
+    log.info("Output size      : %.1f MB", output_path.stat().st_size / (1024 * 1024))
 
 # ─────────────────────────────────────────────────────────
 # CLI
@@ -1916,10 +2237,19 @@ examples:
             "Repeat for each SSP: --ssp-dir /run1/coupling.ssp126/ --ssp-dir /run2/coupling.ssp585/"
         ),
     )
+    parser.add_argument(
+        "--single-nc-file", type=Path, default=None, metavar="FILE",
+        help=(
+            "Path to a single FACTS .nc file (sea_level_change variable). "
+            "SSP, component, workflow, and scale are auto-detected from the filename. "
+            "Produces the same full dashboard (line plot, bar chart, component table) "
+            "from a single file rather than a full experiment tree."
+        ),
+    )
     parser.add_argument("--output", type=Path, default=None, metavar="FILE",
                         help="Output HTML path (default: facts_dashboard.html next to exp-root)")
-    parser.add_argument("--title", default="FACTS Sea-Level Projections",
-                        help="Dashboard title shown in the header")
+    parser.add_argument("--title", default=None,
+                        help="Dashboard title shown in the header (auto-generated if omitted)")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable DEBUG-level logging")
     args = parser.parse_args()
@@ -1927,15 +2257,52 @@ examples:
     if args.verbose:
         log.setLevel(logging.DEBUG)
 
+    # ── Single NC file mode ──────────────────────────────────
+    if args.single_nc_file:
+        nc_path = args.single_nc_file.resolve()
+        if not nc_path.exists():
+            log.error("--single-nc-file not found: %s", nc_path)
+            sys.exit(1)
+
+        default_out = nc_path.parent / "facts_dashboard.html"
+        output_path = (args.output or default_out).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        log.info("FACTS Dashboard Generator — single NC file mode")
+        log.info("  nc-file  : %s", nc_path)
+        log.info("  output   : %s", output_path)
+
+        result = load_single_nc(nc_path)
+        title  = args.title or f"FACTS — {nc_path.stem}"
+
+        log.info("Year span : %s – %s  (%d time steps)",
+                 result["years"][0], result["years"][-1], len(result["years"]))
+        log.info("Building Bokeh dashboard ...")
+        build_dashboard(
+            result["data_dict"], result["years"],
+            result["locations"], result["location_meta"],
+            result["ssps"], result["wfs"],
+            output_path, title=title,
+            single_nc_mode=True,
+        )
+        log.info("Done.")
+        return
+
+    # ── Multi-file / experiment-tree mode ────────────────────
     if not args.exp_root and not args.ssp_dirs:
-        parser.error("Provide at least one of --exp-root or --ssp-dir")
+        parser.error("Provide at least one of --exp-root, --ssp-dir, or --single-nc-file")
 
     exp_root = args.exp_root.resolve() if args.exp_root else None
     if exp_root and not exp_root.is_dir():
         log.error("--exp-root not found: %s", exp_root)
         sys.exit(1)
 
-    default_out = (exp_root / "facts_dashboard.html") if exp_root else Path("facts_dashboard.html")
+    if exp_root:
+        default_out = exp_root / "facts_dashboard.html"
+    elif args.ssp_dirs:
+        default_out = Path(args.ssp_dirs[0]).resolve() / "facts_dashboard.html"
+    else:
+        default_out = Path("facts_dashboard.html")
     output_path = (args.output or default_out).resolve()
 
     # Ensure output directory exists
@@ -1971,9 +2338,10 @@ examples:
         log.error("No data could be loaded from any .nc file.")
         sys.exit(1)
 
+    title = args.title or "FACTS Sea-Level Projections"
     log.info("Year span : %s – %s  (%d time steps)", years[0], years[-1], len(years))
     log.info("Building Bokeh dashboard ...")
-    build_dashboard(data_dict, years, locations, location_meta, ssps, wfs, output_path, title=args.title)
+    build_dashboard(data_dict, years, locations, location_meta, ssps, wfs, output_path, title=title)
     log.info("Done.")
 
 

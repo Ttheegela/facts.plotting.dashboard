@@ -61,7 +61,7 @@ resolve_and_mount() {
     host_abs="${host_dir_abs}/${host_base}"
 
     # If it's a file path (--output flag or .html extension), mount the parent dir
-    if [[ "$flag" == "--output" || "$host_path" == *.html || "$host_path" == *.htm ]]; then
+    if [[ "$flag" == "--output" || "$flag" == "--single-nc-file" || "$host_path" == *.html || "$host_path" == *.htm ]]; then
         host_dir="$host_dir_abs"
         container_dir="/mnt/vol${MOUNT_IDX}"
         container_path="${container_dir}/${host_base}"
@@ -80,7 +80,7 @@ resolve_and_mount() {
 # Walk through all arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --exp-root|--ssp-dir|--output)
+        --exp-root|--ssp-dir|--output|--single-nc-file)
             resolve_and_mount "$1" "$2"
             shift 2
             ;;
@@ -91,6 +91,18 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# If --single-nc-file was used without --output, default the HTML output
+# to the repo folder (the host CWD where run.sh is being invoked from).
+HAS_SINGLE_NC=0
+HAS_OUTPUT=0
+for arg in "${CONTAINER_ARGS[@]}"; do
+    [[ "$arg" == "--single-nc-file" ]] && HAS_SINGLE_NC=1
+    [[ "$arg" == "--output" ]]         && HAS_OUTPUT=1
+done
+if [[ $HAS_SINGLE_NC -eq 1 && $HAS_OUTPUT -eq 0 ]]; then
+    resolve_and_mount "--output" "$(pwd)/facts_dashboard.html"
+fi
 
 if [[ ${#CONTAINER_ARGS[@]} -eq 0 ]]; then
     echo "Usage:"
