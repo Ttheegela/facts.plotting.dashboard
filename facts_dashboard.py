@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 facts_dashboard.py — FACTS Sea-Level Projection Dashboard Generator
-Version: 1.1.4
+Version: 1.0.0
 
 Generates a fully self-contained, interactive HTML dashboard from FACTS output
 .nc files. No server required — open the HTML in any browser.
@@ -10,10 +10,10 @@ Generates a fully self-contained, interactive HTML dashboard from FACTS output
 REQUIREMENTS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Python ≥ 3.9
-  bokeh >= 3.4    xarray >= 2023    numpy >= 1.24
-  pandas >= 2.0   netCDF4 >= 1.6
+  bokeh == 3.8.1   xarray == 2025.12.0   numpy == 1.26.4
+  pandas == 2.3.3  netCDF4 == 1.7.4
 
-  Install:  pip install bokeh xarray numpy pandas netCDF4
+  Install:  pip install -r requirements.txt
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 USAGE

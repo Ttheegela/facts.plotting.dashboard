@@ -6,3 +6,4 @@ __pycache__/
 .claude/
 sample-data/
 reports/
+CHANGES.md
