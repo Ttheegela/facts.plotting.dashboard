@@ -6,7 +6,7 @@ The output is a **single `.html` file** you can open in any browser. No web serv
 
 ---
 
-## What you need
+## Requirements
 
 | Requirement | Notes |
 |-------------|-------|
@@ -16,25 +16,7 @@ The output is a **single `.html` file** you can open in any browser. No web serv
 
 ---
 
-## Quick start
-
-```bash
-# 1. Clone (one time)
-git clone https://github.com/Ttheegela/facts.plotting.dashboard.git
-cd facts.plotting.dashboard
-
-# 2. Build the Docker image (one time)
-bash docker/build.sh
-
-# 3. Generate your dashboard
-bash docker/run.sh --exp-root /path/to/your/experiment/
-```
-
-The dashboard HTML is saved next to your data folder. Open it in any browser.
-
----
-
-## Setup in detail
+## Setup
 
 ### Step 1 — Clone the repository
 
@@ -45,8 +27,6 @@ cd facts.plotting.dashboard
 
 Only needed once.
 
----
-
 ### Step 2 — Build the Docker image
 
 ```bash
@@ -55,22 +35,17 @@ bash docker/build.sh
 
 Builds a local Docker image called `facts-viz`. Only needed once (rebuild after updating `facts_dashboard.py`).
 
+Expected output:
 ```
 Building facts-viz Docker image...
 Done. Image built: facts-viz
 ```
 
----
-
 ### Step 3 — Generate your dashboard
 
-Choose the option that matches your data layout:
+Choose the option that matches your data:
 
----
-
-#### Option A — All scenarios under one folder *(most common)*
-
-Use when all SSP or scenario folders are under a single parent directory.
+**Option A — All scenarios under one folder** *(most common)*
 
 ```bash
 bash docker/run.sh --exp-root /path/to/experiment/
@@ -89,11 +64,7 @@ experiment/
 └── coupling.ssp585/
 ```
 
----
-
-#### Option B — Scenarios in separate folders
-
-Use when each scenario folder is in a different location, or when using non-standard scenario names (e.g. `rco.LL.nz`).
+**Option B — Scenarios in separate folders**
 
 ```bash
 bash docker/run.sh \
@@ -101,22 +72,16 @@ bash docker/run.sh \
   --ssp-dir /path/to/coupling.ssp585/
 ```
 
----
+Repeat `--ssp-dir` for each scenario folder. Works with non-standard scenario names (e.g. `rco.LL.nz`).
 
-#### Option C — Single NetCDF file
-
-Use to quickly plot a single total sea-level output file.
+**Option C — Single NetCDF file**
 
 ```bash
 bash docker/run.sh \
   --single-nc-file /path/to/coupling.ssp585.total.workflow.wf1e.local.nc
 ```
 
----
-
-#### Option D — AR6-style confidence level files
-
-Use for pre-computed AR6-style quantile files from post-processing.
+**Option D — AR6-style confidence level files**
 
 ```bash
 bash docker/run.sh \
@@ -136,9 +101,11 @@ Expected structure inside `--confidence-root`:
     └── ...
 ```
 
----
+### Step 4 — Open the dashboard
 
-### Optional flags
+When the command finishes it prints the output path. Double-click the `.html` file to open it in any browser.
+
+To save to a custom location or set a title:
 
 ```bash
 bash docker/run.sh \
@@ -159,10 +126,10 @@ bash docker/run.sh \
 | `--confidence-root DIR` | Root of AR6-style pre-computed confidence level files |
 | `--confidence-level LEVEL` | Confidence sub-folder to load (`medium_confidence` or `low_confidence`; default: `medium_confidence`) |
 | `--location-lst FILE` | Path to a `location.lst` file for resolving tide gauge names (optional — auto-detected if not provided) |
-| `--output FILE` | Where to write the HTML output (default: `dashboard.html` next to the input data) |
-| `--title TEXT` | Title displayed in the dashboard header (auto-generated if omitted) |
+| `--output FILE` | Where to write the HTML (default: `dashboard.html` next to the input data) |
+| `--title TEXT` | Title shown in the dashboard header (auto-generated if omitted) |
 
-> Use one of `--exp-root`, `--ssp-dir`, `--single-nc-file`, or `--confidence-root` — not more than one mode at a time.
+Use one of `--exp-root`, `--ssp-dir`, `--single-nc-file`, or `--confidence-root` — not more than one mode at a time.
 
 ---
 
@@ -184,17 +151,16 @@ experiment/
 ├── coupling.ssp585/
 │   ├── location.lst                                       ← tide gauge names (optional)
 │   └── output/
-│       ├── coupling.ssp585.total.workflow.wf1e.local.nc  ← local RSL total
-│       ├── coupling.ssp585.total.workflow.wf1e.global.nc ← global mean SL total
+│       ├── coupling.ssp585.total.workflow.wf1e.local.nc
+│       ├── coupling.ssp585.total.workflow.wf1e.global.nc
 │       ├── coupling.ssp585.emuAIS.emulandice.AIS_localsl.nc
-│       ├── coupling.ssp585.GrIS1f.FittedISMIP.GrIS_globalsl.nc
 │       └── ...
-└── rco.LL.nz/                                             ← non-standard scenario name supported
+└── rco.LL.nz/                                             ← non-standard scenario names supported
     └── output/
         └── ...
 ```
 
-The dashboard auto-discovers all scenarios, workflows (wf1e–wf4), components, and tide gauge locations. Non-standard scenario names are fully supported. Missing files are skipped gracefully — partial runs work fine.
+The dashboard auto-discovers all scenarios, workflows (wf1e–wf4), components, and tide gauge locations. Missing files are skipped gracefully.
 
 ---
 
@@ -213,7 +179,7 @@ The dashboard auto-discovers all scenarios, workflows (wf1e–wf4), components, 
 | **Quantile selector** | Bar chart shows any percentile: 5th, 17th, median, 83rd, or 95th |
 | **Year / Y-axis sliders** | Zoom into any time period or sea-level range |
 | **Visibility checkboxes** | Toggle individual lines on or off |
-| **SSP color scheme** | IPCC AR6 standard colors (cool-to-warm blue→red) |
+| **SSP color scheme** | IPCC AR6 standard colors |
 
 ---
 
@@ -221,7 +187,7 @@ The dashboard auto-discovers all scenarios, workflows (wf1e–wf4), components, 
 
 | File | Purpose |
 |------|---------|
-| `facts_dashboard.py` | Main script — the only file needed for direct Python usage |
+| `facts_dashboard.py` | Main script — only file needed for direct Python usage |
 | `requirements.txt` | Pinned Python dependencies |
 | `docker/Dockerfile` | Container definition |
 | `docker/build.sh` | Builds the `facts-viz` Docker image |
@@ -246,18 +212,15 @@ The dashboard auto-discovers all scenarios, workflows (wf1e–wf4), components, 
 **Dashboard only shows data up to 2100**
 → Only `wf*e` workflows were found. Run `wf*f` or `wf4` in FACTS for projections to 2300.
 
-**HTML file is very large**
-→ Expected for runs with many locations. For 1000+ locations the output is ~56 MB.
-
 ---
 
 ## Version history
 
-| Version | Changes |
-|---------|---------|
-| `v1.2.0` *(in progress)* | Scenario generalization (any folder name); HTML ~56 MB for 1030 locations (down from ~664 MB); AR6 confidence file loader; location search with pinned selections; bar chart starts blank; `--location-lst` flag |
-| `v1.1.4` | Location toggle-dropdown; shading band selector; bar chart SSP checkboxes; Y-axis range slider |
+| Version | Key change |
+|---------|------------|
+| `v1.2.0` *(in progress)* | HTML ~56 MB for 1030 locations (down from ~664 MB); scenario generalization; AR6 confidence file loader; location search with pinned selections |
+| `v1.1.4` | Location toggle-dropdown; shading band selector; bar chart SSP checkboxes; Y-axis slider |
 | `v1.1.3` | Human-readable component labels; corrected SSP colour legend |
-| `v1.1.2` | IPCC AR6 SSP color scheme; HTML reduced from 168 MB to 66 MB |
+| `v1.1.2` | IPCC AR6 SSP color scheme; HTML 168 MB → 66 MB |
 | `v1.1.1` | Grouped bar chart; quantile selector |
 | `v1.0.0` | Initial release |
