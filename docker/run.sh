@@ -80,7 +80,7 @@ resolve_and_mount() {
 # Walk through all arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --exp-root|--ssp-dir|--output|--single-nc-file)
+        --exp-root|--ssp-dir|--output|--single-nc-file|--confidence-root|--location-lst)
             resolve_and_mount "$1" "$2"
             shift 2
             ;;
@@ -109,6 +109,8 @@ if [[ ${#CONTAINER_ARGS[@]} -eq 0 ]]; then
     echo "  bash run.sh --exp-root /path/to/exp.alt.emis/"
     echo "  bash run.sh --ssp-dir /path/to/coupling.ssp126/ --ssp-dir /path/to/coupling.ssp585/"
     echo "  bash run.sh --exp-root /path/to/exp/ --output /path/to/dashboard.html --title 'My Run'"
+    echo "  bash run.sh --single-nc-file /path/to/coupling.ssp585.total.workflow.wf1e.localsl.nc"
+    echo "  bash run.sh --confidence-root /path/to/4_confidence_level_files/ --confidence-level medium_confidence"
     exit 1
 fi
 

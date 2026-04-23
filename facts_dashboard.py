@@ -72,6 +72,7 @@ DASHBOARD FEATURES
 """
 
 import argparse
+import json
 import logging
 import re
 import sys
@@ -86,8 +87,9 @@ from bokeh.io import save
 from bokeh.layouts import column, row
 from bokeh.models import (
     Checkbox, CheckboxGroup, ColumnDataSource, CustomJS, DataTable, Div,
-    CustomJSTickFormatter, FixedTicker, GlyphRenderer, HTMLTemplateFormatter,
-    HoverTool, Legend, LegendItem, Range1d, RangeSlider, Select, TableColumn, Toggle,
+    CustomJSTickFormatter, FixedTicker, HTMLTemplateFormatter,
+    HoverTool, InlineStyleSheet, Legend, LegendItem, Range1d, RangeSlider,
+    Select, TableColumn, TextInput, Toggle,
 )
 from bokeh.plotting import figure
 from bokeh.resources import INLINE   # embeds all JS/CSS inline so the HTML is self-contained
@@ -114,7 +116,7 @@ SSP_COLORS = {
     "ssp370": "#e71d25",   # rgb(231, 29, 37)
     "ssp585": "#951b1e",   # rgb(149, 27, 30)
 }
-_FALLBACK_COLORS = ["#4dac26", "#b8e186", "#f7f7f7", "#e9a3c9", "#c51b7d", "#542788"]
+_FALLBACK_COLORS = ["#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#b07aa1"]
 
 SSP_LABELS = {
     "ssp119": "SSP1-1.9",
@@ -133,6 +135,7 @@ WF_LABELS = {
     "wf3e": "wf3e — emulandice GrIS, DeConto21 AIS, emulandice glaciers (to 2100)",
     "wf3f": "wf3f — FittedISMIP GrIS, DeConto21 AIS, AR5 glaciers (to 2300)",
     "wf4":  "wf4  — Bamber19 ice sheets, AR5 glaciers (to 2300)",
+    "conf": "conf — AR6-style pre-computed confidence levels",
 }
 
 # Component → line style (drives the actual rendered line style)
@@ -155,39 +158,39 @@ COMPONENT_STYLES = {
 # from any reference table produced by a separate run. This is expected, not a bug.
 WORKFLOW_COMPONENT_FILES = {
     "wf1e": {
-        "AIS":      "coupling.{ssp}.emuAIS.emulandice.AIS_{scale}sl.nc",
-        "GrIS":     "coupling.{ssp}.emuGrIS.emulandice.GrIS_{scale}sl.nc",
-        "glaciers": "coupling.{ssp}.emuglaciers.emulandice.glaciers_{scale}sl.nc",
+        "AIS":      "emuAIS.emulandice.AIS_{scale}sl.nc",
+        "GrIS":     "emuGrIS.emulandice.GrIS_{scale}sl.nc",
+        "glaciers": "emuglaciers.emulandice.glaciers_{scale}sl.nc",
     },
     "wf1f": {
-        "AIS":      "coupling.{ssp}.ar5AIS.ipccar5.icesheets_AIS_{scale}sl.nc",
-        "GrIS":     "coupling.{ssp}.GrIS1f.FittedISMIP.GrIS_GIS_{scale}sl.nc",
-        "glaciers": "coupling.{ssp}.ar5glaciers.ipccar5.glaciers_{scale}sl.nc",
+        "AIS":      "ar5AIS.ipccar5.icesheets_AIS_{scale}sl.nc",
+        "GrIS":     "GrIS1f.FittedISMIP.GrIS_GIS_{scale}sl.nc",
+        "glaciers": "ar5glaciers.ipccar5.glaciers_{scale}sl.nc",
     },
     "wf2e": {
-        "AIS":      "coupling.{ssp}.larmip.larmip.AIS_{scale}sl.nc",
-        "GrIS":     "coupling.{ssp}.emuGrIS.emulandice.GrIS_{scale}sl.nc",
-        "glaciers": "coupling.{ssp}.emuglaciers.emulandice.glaciers_{scale}sl.nc",
+        "AIS":      "larmip.larmip.AIS_{scale}sl.nc",
+        "GrIS":     "emuGrIS.emulandice.GrIS_{scale}sl.nc",
+        "glaciers": "emuglaciers.emulandice.glaciers_{scale}sl.nc",
     },
     "wf2f": {
-        "AIS":      "coupling.{ssp}.larmip.larmip.AIS_{scale}sl.nc",
-        "GrIS":     "coupling.{ssp}.GrIS1f.FittedISMIP.GrIS_GIS_{scale}sl.nc",
-        "glaciers": "coupling.{ssp}.ar5glaciers.ipccar5.glaciers_{scale}sl.nc",
+        "AIS":      "larmip.larmip.AIS_{scale}sl.nc",
+        "GrIS":     "GrIS1f.FittedISMIP.GrIS_GIS_{scale}sl.nc",
+        "glaciers": "ar5glaciers.ipccar5.glaciers_{scale}sl.nc",
     },
     "wf3e": {
-        "AIS":      "coupling.{ssp}.deconto21.deconto21.AIS_AIS_{scale}sl.nc",
-        "GrIS":     "coupling.{ssp}.emuGrIS.emulandice.GrIS_{scale}sl.nc",
-        "glaciers": "coupling.{ssp}.emuglaciers.emulandice.glaciers_{scale}sl.nc",
+        "AIS":      "deconto21.deconto21.AIS_AIS_{scale}sl.nc",
+        "GrIS":     "emuGrIS.emulandice.GrIS_{scale}sl.nc",
+        "glaciers": "emuglaciers.emulandice.glaciers_{scale}sl.nc",
     },
     "wf3f": {
-        "AIS":      "coupling.{ssp}.deconto21.deconto21.AIS_AIS_{scale}sl.nc",
-        "GrIS":     "coupling.{ssp}.GrIS1f.FittedISMIP.GrIS_GIS_{scale}sl.nc",
-        "glaciers": "coupling.{ssp}.ar5glaciers.ipccar5.glaciers_{scale}sl.nc",
+        "AIS":      "deconto21.deconto21.AIS_AIS_{scale}sl.nc",
+        "GrIS":     "GrIS1f.FittedISMIP.GrIS_GIS_{scale}sl.nc",
+        "glaciers": "ar5glaciers.ipccar5.glaciers_{scale}sl.nc",
     },
     "wf4": {
-        "AIS":      "coupling.{ssp}.bamber19.bamber19.icesheets_AIS_{scale}sl.nc",
-        "GrIS":     "coupling.{ssp}.bamber19.bamber19.icesheets_GIS_{scale}sl.nc",
-        "glaciers": "coupling.{ssp}.ar5glaciers.ipccar5.glaciers_{scale}sl.nc",
+        "AIS":      "bamber19.bamber19.icesheets_AIS_{scale}sl.nc",
+        "GrIS":     "bamber19.bamber19.icesheets_GIS_{scale}sl.nc",
+        "glaciers": "ar5glaciers.ipccar5.glaciers_{scale}sl.nc",
     },
 }
 
@@ -197,8 +200,8 @@ WORKFLOW_COMPONENT_FALLBACK_SUM = {
     "wf1f": {
         "AIS": {
             "local": [
-                "coupling.{ssp}.ar5AIS.ipccar5.icesheets_EAIS_{scale}sl.nc",
-                "coupling.{ssp}.ar5AIS.ipccar5.icesheets_WAIS_{scale}sl.nc",
+                "ar5AIS.ipccar5.icesheets_EAIS_{scale}sl.nc",
+                "ar5AIS.ipccar5.icesheets_WAIS_{scale}sl.nc",
             ]
         }
     }
@@ -206,9 +209,9 @@ WORKFLOW_COMPONENT_FALLBACK_SUM = {
 
 # Workflow-independent components (same file for all workflows).
 WORKFLOW_INDEPENDENT_COMPONENTS = {
-    "sterodynamics":    "coupling.{ssp}.ocean.tlm.sterodynamics_{scale}sl.nc",
-    "landwaterstorage": "coupling.{ssp}.lws.ssp.landwaterstorage_{scale}sl.nc",
-    "vlm":              "coupling.{ssp}.k14vlm.kopp14.verticallandmotion_{scale}sl.nc",
+    "sterodynamics":    "ocean.tlm.sterodynamics_{scale}sl.nc",
+    "landwaterstorage": "lws.ssp.landwaterstorage_{scale}sl.nc",
+    "vlm":              "k14vlm.kopp14.verticallandmotion_{scale}sl.nc",
 }
 
 COMPONENTS = (
@@ -231,6 +234,14 @@ COMPONENT_LABELS = {
 # Index map used throughout: 0=p05, 1=p17, 2=p50(median), 3=p83, 4=p95
 QUANTILES = [0.05, 0.17, 0.50, 0.83, 0.95]
 
+# Confidence files store 107 pre-computed quantiles (no samples axis).
+# These indices correspond to p05/p17/p50/p83/p95 in that 107-value array.
+_CONF_Q_IDX = {"vlo": 7, "lo": 20, "med": 53, "hi": 86, "vhi": 99}
+
+# Component name normalisation for confidence file filenames.
+# Confidence files use "GIS" and "verticallandmotion"; dashboard uses "GrIS" and "vlm".
+_CONF_COMP_MAP = {"GIS": "GrIS", "verticallandmotion": "vlm"}
+
 def _r1(arr):
     """Round a float array to 1 decimal place (mm precision). Used throughout for data compaction."""
     return [round(float(v), 1) for v in arr]
@@ -241,8 +252,53 @@ XMAX_FIXED = 2300
 YMIN_FIXED = -500
 YMAX_FIXED = 4000
 
-# Bar chart: max locations to show by default (Bob: "fewer tide gauges for better comparison")
-BAR_DEFAULT_N_LOCS = 8
+# ─────────────────────────────────────────────────────────
+# Scenario helpers
+# ─────────────────────────────────────────────────────────
+
+def _parse_run_prefix_and_tag(nc_path: Path) -> tuple:
+    """
+    Read the run prefix and scenario tag directly from an NC filename.
+    Splits on '.total.workflow.' — everything before is the run prefix.
+
+    coupling.ssp126.total.workflow.wf1e.local.nc  → ("coupling.ssp126", "ssp126")
+    rco.LL.nz.total.workflow.wf1e.local.nc        → ("rco.LL.nz",       "rco.LL.nz")
+    src.H.ssp370.total.workflow.wf1e.local.nc     → ("src.H.ssp370",    "H.ssp370")
+
+    The tag is parts[1:] joined — strips the leading segment (coupling / src / etc.)
+    only when more than one dot-segment is present. For single-segment prefixes like
+    'rco.LL.nz' the whole prefix is used as the tag.
+    """
+    marker = ".total.workflow."
+    stem = nc_path.stem
+    if marker not in stem:
+        raise ValueError(f"Cannot parse run prefix from {nc_path.name}")
+    run_prefix = stem.split(marker, 1)[0]
+    parts = run_prefix.split(".")
+    # Drop the leading coupling/src/rff wrapper only for well-known wrappers
+    known_wrappers = {"coupling", "src"}
+    tag = ".".join(parts[1:]) if parts[0] in known_wrappers and len(parts) > 1 else run_prefix
+    return run_prefix, tag
+
+
+def _build_nc_path(out_dir: Path, run_prefix: str, suffix: str) -> Path:
+    """Prepend run_prefix to a suffix to get a full nc path.
+
+    _build_nc_path(out_dir, "src.H.ssp370", "emuAIS.emulandice.AIS_localsl.nc")
+    → out_dir / "src.H.ssp370.emuAIS.emulandice.AIS_localsl.nc"
+    """
+    return out_dir / f"{run_prefix}.{suffix}"
+
+
+def _resolve_total_nc(out_dir: Path, run_prefix: str, wf: str, scale: str) -> Path:
+    """Return the total workflow nc path, accepting both .local.nc and .localsl.nc naming.
+
+    Some FACTS runs name the file ...wf1e.local.nc, others use ...wf1e.localsl.nc.
+    Glob for both; return the first hit or the plain form as fallback.
+    """
+    hits = sorted(out_dir.glob(f"{run_prefix}.total.workflow.{wf}.{scale}*.nc"))
+    return hits[0] if hits else out_dir / f"{run_prefix}.total.workflow.{wf}.{scale}.nc"
+
 
 # ─────────────────────────────────────────────────────────
 # Discovery helpers
@@ -255,7 +311,7 @@ def _count_nc_locations(out_dir: Path) -> int:
     Used to prefer the output directory that has more locations (more complete run).
     Returns 0 if no suitable file exists or the file cannot be read.
     """
-    candidates = list(out_dir.glob("*.total.workflow.*.local.nc"))
+    candidates = sorted(out_dir.glob("*.total.workflow.*.local*.nc"))
     if not candidates:
         return 0
     try:
@@ -269,32 +325,49 @@ def _count_nc_locations(out_dir: Path) -> int:
 
 def collect_ssp_entries(exp_root: Path = None, ssp_dirs: list = None) -> list:
     """
-    Returns a list of (ssp_tag, output_dir, exp_dir) tuples.
+    Returns a list of (ssp_tag, run_prefix, output_dir, exp_dir) tuples.
+
+    The run_prefix is read directly from the actual NC filenames on disk —
+    not inferred from the folder name. This makes the dashboard robust to any
+    scenario naming convention (coupling.ssp*, rco.LL.nz, src.H.ssp370, rff.LL, etc.).
 
     Args:
-        exp_root:  Root folder — scan for coupling.ssp* subdirectories.
-        ssp_dirs:  List of individual SSP experiment folders (or their output/ subfolders).
+        exp_root:  Root folder — scan all subdirectories for scenario output.
+        ssp_dirs:  List of individual scenario folders (or their output/ subfolders).
 
     Returns:
-        Sorted list of (ssp_tag, output_dir, exp_dir).
-
-    Example:
-        entries = collect_ssp_entries(exp_root=Path("exp.alt.emis/"))
+        Sorted list of (ssp_tag, run_prefix, output_dir, exp_dir).
     """
     entries   = []
     seen_tags = set()
 
+    def _try_add(exp_dir: Path, out_dir: Path):
+        if not out_dir.is_dir():
+            return
+        nc_files = sorted(out_dir.glob("*.total.workflow.*.nc"))
+        if not nc_files:
+            return
+        try:
+            run_prefix, tag = _parse_run_prefix_and_tag(nc_files[0])
+        except Exception as exc:
+            log.warning("Could not parse run prefix in %s: %s", out_dir, exc)
+            return
+        if tag in seen_tags:
+            log.warning("Scenario %s already added — skipping %s", tag, out_dir)
+            return
+        entries.append((tag, run_prefix, out_dir, exp_dir))
+        seen_tags.add(tag)
+        log.info("Found scenario %s (prefix=%s) in %s", tag, run_prefix, out_dir)
+
     if exp_root:
         for d in sorted(exp_root.iterdir()):
-            if not (d.is_dir() and d.name.startswith("coupling.ssp")):
+            if not d.is_dir():
                 continue
             out = d / "output"
             if not (out.is_dir() and any(out.glob("*.total.workflow.*.nc"))):
                 continue
             # If an "output copy" directory also exists, pick whichever has more
-            # tide gauge locations in its local nc files.  This handles the case
-            # where output/ is a partial/newer run (e.g. ssp585 run with only 1
-            # location) while "output copy" holds the full original Indian Ocean run.
+            # tide gauge locations in its local nc files.
             out_copy = d / "output copy"
             if out_copy.is_dir() and any(out_copy.glob("*.total.workflow.*.nc")):
                 n_out  = _count_nc_locations(out)
@@ -303,48 +376,20 @@ def collect_ssp_entries(exp_root: Path = None, ssp_dirs: list = None) -> list:
                     log.info("Preferring 'output copy' for %s (%d locs > %d locs in output/)",
                              d.name, n_copy, n_out)
                     out = out_copy
-            tag = d.name[len("coupling."):]
-            entries.append((tag, out, d))
-            seen_tags.add(tag)
-            log.info("Found SSP %s in %s", tag, out)
+            _try_add(d, out)
 
     for raw in (ssp_dirs or []):
         p = Path(raw).resolve()
-
         if p.name == "output" and p.is_dir():
-            out_dir = p
-            exp_dir = p.parent
+            out_dir, exp_dir = p, p.parent
         elif (p / "output").is_dir():
-            out_dir = p / "output"
-            exp_dir = p
+            out_dir, exp_dir = p / "output", p
         else:
-            out_dir = p
-            exp_dir = p.parent
-
+            out_dir, exp_dir = p, p.parent
         if not out_dir.is_dir():
             log.warning("Directory not found — %s", out_dir)
             continue
-
-        nc_files = sorted(out_dir.glob("*.total.workflow.*.nc"))
-        if not nc_files:
-            log.warning("No total.workflow .nc files in %s", out_dir)
-            continue
-
-        tag = next(
-            (part for part in nc_files[0].stem.split(".") if part.startswith("ssp")),
-            None,
-        )
-        if tag is None:
-            log.warning("Could not determine SSP tag from %s", nc_files[0].name)
-            continue
-
-        if tag in seen_tags:
-            log.warning("SSP %s already added — skipping %s", tag, out_dir)
-            continue
-
-        entries.append((tag, out_dir, exp_dir))
-        seen_tags.add(tag)
-        log.info("Found SSP %s in %s", tag, out_dir)
+        _try_add(exp_dir, out_dir)
 
     return sorted(entries, key=lambda e: e[0])
 
@@ -354,22 +399,19 @@ def discover_workflows(entries: list) -> list:
     Discover all workflow IDs present in the output .nc filenames.
 
     Args:
-        entries: List of (ssp_tag, output_dir, exp_dir) tuples.
+        entries: List of (ssp_tag, run_prefix, output_dir, exp_dir) tuples.
 
     Returns:
         Sorted list of workflow ID strings (e.g. ["wf1e", "wf1f", ...]).
-
-    Example:
-        wfs = discover_workflows(entries)
     """
     wfs = set()
-    for _, out_dir, _ in entries:
+    for _, _, out_dir, _ in entries:
         for f in out_dir.glob("*.total.workflow.*.nc"):
             parts = f.stem.split(".")
             for i, p in enumerate(parts):
                 if p == "workflow" and i + 1 < len(parts):
                     c = parts[i + 1]
-                    if c not in ("local", "global"):
+                    if c not in ("local", "global", "localsl", "globalsl"):
                         wfs.add(c)
     order = list(WF_LABELS.keys())
     return sorted(wfs, key=lambda w: order.index(w) if w in order else 99)
@@ -380,15 +422,12 @@ def load_location_list(entries: list) -> list:
     Load tide gauge station list from location.lst in the first available exp_dir.
 
     Args:
-        entries: List of (ssp_tag, output_dir, exp_dir) tuples.
+        entries: List of (ssp_tag, run_prefix, output_dir, exp_dir) tuples.
 
     Returns:
         List of dicts with keys: name, id, lat, lon.
-
-    Example:
-        locations = load_location_list(entries)
     """
-    for _, _, exp_dir in entries:
+    for _, _, _, exp_dir in entries:
         p = exp_dir / "location.lst"
         if p.exists():
             df = pd.read_csv(p, sep=r"\s+", header=None, names=["name", "id", "lat", "lon"],
@@ -576,11 +615,11 @@ def _find_best_location_lst(nc_path: Path, loc_ids_in_file: list) -> dict:
     candidates = []
 
     search_dirs = [nc_path.parent, nc_path.parent.parent]
-    # Also scan all sibling coupling.ssp* directories at exp_root level
+    # Also scan all sibling scenario directories at exp_root level
     exp_root_candidate = nc_path.parent.parent.parent
     if exp_root_candidate.is_dir():
         for sibling in sorted(exp_root_candidate.iterdir()):
-            if sibling.is_dir() and sibling.name.startswith("coupling.ssp"):
+            if sibling.is_dir() and (sibling / "location.lst").exists():
                 search_dirs.append(sibling)
 
     for d in search_dirs:
@@ -704,6 +743,130 @@ def load_single_nc(nc_path: Path) -> dict:
     }
 
 
+def load_confidence_files(conf_root: Path, confidence_level: str = "medium_confidence",
+                          location_lst: Path = None) -> dict:
+    """
+    Load AR6-style pre-computed confidence level NC files.
+
+    Expected structure:
+        conf_root/{confidence_level}/{ssp}/{component}_{ssp}_{confidence_level}_values.nc
+
+    Unlike standard FACTS .nc files (which have a samples axis that must be reduced),
+    these files store pre-computed quantiles directly:
+        sea_level_change shape: (quantiles=107, years, locations)
+
+    Quantile indices used: p05=7, p17=20, p50=53, p83=86, p95=99
+    Workflow tag: "conf" (synthetic — these are not workflow runs)
+
+    Args:
+        conf_root:        Root of confidence file tree (contains low_confidence/, medium_confidence/).
+        confidence_level: Sub-directory to use ("medium_confidence" or "low_confidence").
+
+    Returns:
+        dict with keys: data_dict, years, locations, location_meta, ssps, wfs
+    """
+    conf_dir = conf_root / confidence_level
+    if not conf_dir.is_dir():
+        raise FileNotFoundError(f"Confidence level directory not found: {conf_dir}")
+
+    data_dict:     dict = {}
+    location_meta: dict = {}
+    locations_seen: dict = {}   # loc_id → {name, id, lat, lon}
+    years_ref = None
+    ssps_found: set = set()
+
+    for ssp_dir in sorted(conf_dir.iterdir()):
+        if not ssp_dir.is_dir():
+            continue
+        ssp_tag = ssp_dir.name   # e.g. "ssp585"
+
+        for nc_path in sorted(ssp_dir.glob("*_values.nc")):
+            # Filename: {component}_{ssp}_{confidence_level}_values.nc
+            # First underscore-delimited token is the component name.
+            raw_comp = nc_path.stem.split("_")[0]
+            comp = _CONF_COMP_MAP.get(raw_comp, raw_comp)
+
+            try:
+                ds  = xr.open_dataset(nc_path)
+                sl  = ds["sea_level_change"].values   # (quantiles, years, locations)
+                yrs = ds.years.values.tolist()
+                lids = ds.locations.values.tolist()
+                lats = ds["lat"].values.tolist() if "lat" in ds else []
+                lons = ds["lon"].values.tolist() if "lon" in ds else []
+                ds.close()
+            except Exception as exc:
+                log.warning("Failed to load confidence file %s: %s", nc_path.name, exc)
+                continue
+
+            if years_ref is None:
+                years_ref = yrs
+            ssps_found.add(ssp_tag)
+
+            for li, raw_lid in enumerate(lids):
+                loc_id = int(raw_lid)
+                key = f"{ssp_tag}|{comp}|conf|local|{loc_id}"
+                data_dict[key] = {
+                    "years": yrs,
+                    "vlo":   _r1(sl[_CONF_Q_IDX["vlo"], :, li]),
+                    "lo":    _r1(sl[_CONF_Q_IDX["lo"],  :, li]),
+                    "med":   _r1(sl[_CONF_Q_IDX["med"], :, li]),
+                    "hi":    _r1(sl[_CONF_Q_IDX["hi"],  :, li]),
+                    "vhi":   _r1(sl[_CONF_Q_IDX["vhi"], :, li]),
+                }
+                if loc_id not in locations_seen:
+                    lat = float(lats[li]) if li < len(lats) else None
+                    lon = float(lons[li]) if li < len(lons) else None
+                    locations_seen[loc_id] = {
+                        "name": f"ID {loc_id}",
+                        "id":   loc_id,
+                        "lat":  lat,
+                        "lon":  lon,
+                    }
+                    location_meta[loc_id] = {"lat": lat, "lon": lon}
+
+            log.info("[conf] Loaded %s | %s | %s", ssp_tag, comp, nc_path.name)
+
+    if not data_dict:
+        raise RuntimeError(f"No confidence data loaded from {conf_dir}")
+
+    # Try to resolve location names from a location.lst file.
+    # Priority: explicit --location-lst flag → auto-search near conf_root.
+    lst_map: dict = {}
+    candidates = []
+    if location_lst is not None:
+        candidates = [location_lst]
+    else:
+        search_dirs = [conf_root, conf_root.parent, conf_root.parent.parent,
+                       conf_root.parent.parent.parent]
+        candidates = [d / "location.lst" for d in search_dirs]
+    for lst in candidates:
+        if lst and lst.exists():
+            try:
+                df = pd.read_csv(lst, sep=r"\s+", header=None, names=["name", "id", "lat", "lon"])
+                lst_map = {int(r["id"]): str(r["name"]) for _, r in df.iterrows()}
+                log.info("[conf] Resolved location names from %s", lst)
+                break
+            except Exception:
+                pass
+    for loc_id, loc_info in locations_seen.items():
+        if loc_id in lst_map:
+            loc_info["name"] = lst_map[loc_id]
+
+    locations = sorted(locations_seen.values(), key=lambda x: x["id"])
+    ssps = sorted(ssps_found, key=lambda s: list(SSP_COLORS.keys()).index(s) if s in SSP_COLORS else 99)
+
+    log.info("[conf] %d data series | %d SSPs | %d location(s)",
+             len(data_dict), len(ssps), len(locations))
+    return {
+        "data_dict":     data_dict,
+        "years":         years_ref or [],
+        "locations":     locations,
+        "location_meta": location_meta,
+        "ssps":          ssps,
+        "wfs":           ["conf"],
+    }
+
+
 def precompute_all(entries: list, wfs: list) -> tuple:
     """
     Load all total + component .nc files and compute quantiles.
@@ -729,14 +892,14 @@ def precompute_all(entries: list, wfs: list) -> tuple:
 
     # ── Total workflow files ───────────────────────────────
     total_combos = [
-        (ssp, out_dir, wf, sc)
-        for ssp, out_dir, _ in entries
+        (ssp, run_prefix, out_dir, wf, sc)
+        for ssp, run_prefix, out_dir, _ in entries
         for wf in wfs
         for sc in ("local", "global")
     ]
     log.info("Loading total workflow files (%d combinations) ...", len(total_combos))
-    for i, (ssp, out_dir, wf, scale) in enumerate(total_combos):
-        nc_path = out_dir / f"coupling.{ssp}.total.workflow.{wf}.{scale}.nc"
+    for i, (ssp, run_prefix, out_dir, wf, scale) in enumerate(total_combos):
+        nc_path = _resolve_total_nc(out_dir, run_prefix, wf, scale)
         log.debug("[%3d/%d] %s", i + 1, len(total_combos), nc_path.name)
         if not nc_path.exists():
             log.debug("  Not found — skipping")
@@ -752,18 +915,18 @@ def precompute_all(entries: list, wfs: list) -> tuple:
 
     # ── Workflow-specific components (AIS, GrIS, glaciers) ─
     log.info("Loading workflow-specific component files ...")
-    for ssp, out_dir, _ in entries:
+    for ssp, run_prefix, out_dir, _ in entries:
         for wf in wfs:
             for comp, pattern in WORKFLOW_COMPONENT_FILES.get(wf, {}).items():
                 for scale in ("local", "global"):
-                    nc_path = out_dir / pattern.format(ssp=ssp, scale=scale)
+                    nc_path = _build_nc_path(out_dir, run_prefix, pattern.format(scale=scale))
                     log.debug("  %s  %s  %s  %s", wf, comp, scale, nc_path.name)
                     if not nc_path.exists():
                         # Check for a fallback sum (e.g. wf1f AIS local = EAIS + WAIS)
                         fallback = (WORKFLOW_COMPONENT_FALLBACK_SUM
                                     .get(wf, {}).get(comp, {}).get(scale))
                         if fallback:
-                            fb_paths = [out_dir / p.format(ssp=ssp, scale=scale)
+                            fb_paths = [_build_nc_path(out_dir, run_prefix, p.format(scale=scale))
                                         for p in fallback]
                             if all(p.exists() for p in fb_paths):
                                 log.debug("  Fallback sum: %s", [p.name for p in fb_paths])
@@ -791,10 +954,10 @@ def precompute_all(entries: list, wfs: list) -> tuple:
 
     # ── Workflow-independent components (sterodynamics, lws, vlm) ─
     log.info("Loading workflow-independent component files ...")
-    for ssp, out_dir, _ in entries:
+    for ssp, run_prefix, out_dir, _ in entries:
         for comp, pattern in WORKFLOW_INDEPENDENT_COMPONENTS.items():
             for scale in ("local", "global"):
-                nc_path = out_dir / pattern.format(ssp=ssp, scale=scale)
+                nc_path = _build_nc_path(out_dir, run_prefix, pattern.format(scale=scale))
                 log.debug("  %s  %s  %s", comp, scale, nc_path.name)
                 if not nc_path.exists():
                     log.debug("  Not found — skipping")
@@ -832,8 +995,6 @@ _STYLE_PREVIEW = {
     "solid":    "────",
     "dashed":   "— — —",
     "dotted":   "⋅ ⋅ ⋅ ⋅",
-    "dotdash":  "⋅ — ⋅ —",
-    "dashdot":  "— ⋅ — ⋅",
     "circle":   "○ ○ ○ ○",
     "diamond":  "◇ ◇ ◇ ◇",
     "asterisk": "* * * *",
@@ -905,174 +1066,6 @@ def _workflow_table_html() -> str:
   </table>
 </div>
 """
-
-# ─────────────────────────────────────────────────────────
-# TABLE section builder
-# ─────────────────────────────────────────────────────────
-
-def _build_table_section(
-    data_dict:       dict,
-    years:           list,
-    ssps:            list,
-    wfs:             list,
-    loc_options_all: list,
-    location_meta_js: dict,
-) -> object:
-    """
-    Build the interactive TABLE section (Bokeh DataTable).
-
-    Rows = workflows, columns = SSPs.
-    Each cell shows: median / (p17, p83) / [p5, p95] for the selected
-    year, scale, and location.  Uses component='total' only.
-
-    Args:
-        data_dict:        Full data dict keyed by {ssp}|{component}|{wf}|{scale}|{loc_id}.
-        years:            Full year list (used to build the year selector options).
-        ssps:             List of SSP tag strings.
-        wfs:              List of workflow ID strings.
-        loc_options_all:  (value, label) pairs for the location Select widget.
-        location_meta_js: JS-side location metadata dict.
-
-    Returns:
-        Bokeh Column layout containing the table header, controls, and DataTable.
-
-    Example:
-        tbl = _build_table_section(data_dict, years, ssps, wfs, loc_opts, loc_meta)
-    """
-    # ── Pre-populate table for default selections ─────────
-    # This makes values visible immediately on page load without
-    # requiring the user to interact with a widget first.
-    default_year_int  = 2100
-    default_scale     = "local"
-    default_loc_int   = int(loc_options_all[1][0]) if len(loc_options_all) > 1 else int(loc_options_all[0][0])
-
-    def _table_row(wf, year_int, scale, loc_int):
-        row_vals = {}
-        # For global scale the nc file only contains loc_id = -1
-        lookup_loc = -1 if scale == "global" else loc_int
-        for ssp in ssps:
-            key = f"{ssp}|total|{wf}|{scale}|{lookup_loc}"
-            d   = data_dict.get(key)
-            if not d:
-                row_vals[ssp] = ""
-                continue
-            try:
-                idx = d["years"].index(year_int)
-            except ValueError:
-                row_vals[ssp] = ""
-                continue
-            med = d["med"][idx]; lo = d["lo"][idx]; hi = d["hi"][idx]
-            vlo = d["vlo"][idx]; vhi = d["vhi"][idx]
-            row_vals[ssp] = f"{med:.1f}\n({lo:.1f}, {hi:.1f})\n[{vlo:.1f}, {vhi:.1f}]"
-        return row_vals
-
-    init_data = {"workflow": [wf for wf in wfs]}
-    for ssp in ssps:
-        init_data[ssp] = []
-    for wf in wfs:
-        row_vals = _table_row(wf, default_year_int, default_scale, default_loc_int)
-        for ssp in ssps:
-            init_data[ssp].append(row_vals[ssp])
-
-    source_table = ColumnDataSource(data=init_data)
-
-    # ── TableColumns ─────────────────────────────────────
-    html_fmt = HTMLTemplateFormatter(template='<div style="white-space:pre-line;"><%= value %></div>')
-    tbl_columns = [
-        TableColumn(field="workflow", title="Workflow",
-                    formatter=HTMLTemplateFormatter(
-                        template='<div style="font-weight:bold;"><%= value %></div>'
-                    )),
-    ]
-    for ssp in ssps:
-        tbl_columns.append(TableColumn(field=ssp, title=ssp, formatter=html_fmt, width=200))
-
-    data_table = DataTable(
-        source=source_table,
-        columns=tbl_columns,
-        width=900,
-        height=min(600, 80 + 80 * len(wfs)),
-        row_height=80,
-        index_position=None,
-        editable=False,
-    )
-
-    # ── Controls ──────────────────────────────────────────
-    year_opts    = [str(y) for y in sorted(set(years))]
-    default_year = str(default_year_int) if str(default_year_int) in year_opts else year_opts[-1]
-    default_loc  = str(default_loc_int)
-
-    year_sel  = Select(title="Year (Table)",     value=default_year,  options=year_opts,      width=120)
-    scale_sel = Select(title="Scale (Table)",    value=default_scale, options=[("local","Local RSL"),("global","Global Mean SL")], width=160)
-    loc_sel   = Select(title="Location (Table)", value=default_loc,   options=loc_options_all, width=280)
-
-    # ── CustomJS callback ─────────────────────────────────
-    # Key format: "{ssp}|{component}|{wf}|{scale}|{loc_id}"
-    # component is always "total" in this (workflow summary) table.
-    # The workflow table iterates over wfs (rows) and ssps (columns).
-    JS_TABLE = """
-    const year_val  = parseInt(year_sel.value);
-    const scale_val = scale_sel.value;
-    // Global .nc files only contain loc_id = -1; local files use the tide gauge ID.
-    // This mirrors how Python's _store_result() writes keys.
-    const loc_val   = (scale_val === "global") ? -1 : parseInt(loc_sel.value);
-    const component = "total";
-
-    const new_data = { workflow: [] };
-    for (let j = 0; j < ssps.length; j++) { new_data[ssps[j]] = []; }
-
-    for (let i = 0; i < wfs.length; i++) {
-        const wf = wfs[i];
-        new_data.workflow.push(wf.startsWith("wf") ? wf : "wf" + wf);
-        for (let j = 0; j < ssps.length; j++) {
-            const ssp = ssps[j];
-            const key = ssp + "|" + component + "|" + wf + "|" + scale_val + "|" + loc_val;
-            const d   = data_dict[key];
-            if (!d) { new_data[ssp].push(""); continue; }
-            const idx = d.years.indexOf(year_val);
-            if (idx === -1) { new_data[ssp].push(""); continue; }
-            const med = d.med[idx], lo = d.lo[idx], hi = d.hi[idx];
-            const vlo = (d.vlo !== undefined) ? d.vlo[idx] : null;
-            const vhi = (d.vhi !== undefined) ? d.vhi[idx] : null;
-            let cell = med.toFixed(1) + "\\n(" + lo.toFixed(1) + ", " + hi.toFixed(1) + ")";
-            if (vlo !== null && vhi !== null) {
-                cell += "\\n[" + vlo.toFixed(1) + ", " + vhi.toFixed(1) + "]";
-            }
-            new_data[ssp].push(cell);
-        }
-    }
-    source_table.data = new_data;
-    source_table.change.emit();
-    """
-
-    cb = CustomJS(
-        args=dict(
-            source_table=source_table,
-            data_dict=data_dict,
-            year_sel=year_sel,
-            scale_sel=scale_sel,
-            loc_sel=loc_sel,
-            ssps=ssps,
-            wfs=wfs,
-        ),
-        code=JS_TABLE,
-    )
-    year_sel.js_on_change("value",  cb)
-    scale_sel.js_on_change("value", cb)
-    loc_sel.js_on_change("value",   cb)
-
-    # ── Header ────────────────────────────────────────────
-    tbl_head = Div(text="""
-<div style="margin-top:32px;margin-bottom:6px;">
-  <u>FACTS <b>sea-level projections</b></u> (TABLE)<br>
-  Select a <b>year</b>, <b>scale</b> (local/global), and <b>location</b> to view
-  <u>median</u>, <u>[17th, 83rd]</u>, and <u>[5th, 95th]</u> percentile values
-  for all workflows and SSPs.<br>
-  Rows show workflows, columns show SSPs.
-</div>
-""", width=900)
-
-    return column(tbl_head, row(year_sel, scale_sel, loc_sel), data_table)
 
 
 # ─────────────────────────────────────────────────────────
@@ -1175,6 +1168,38 @@ def _build_component_table_section(
     loc_sel  = Select(title="Location (local)", value=str(default_loc_int),
                       options=loc_options_all, width=280)
 
+    # Search bar: hidden until toggle is clicked.
+    loc_search_comp = TextInput(placeholder="Search location...", width=280, visible=False)
+    loc_search_comp.js_on_change("value", CustomJS(
+        args=dict(loc_sel=loc_sel, all_opts=loc_options_all),
+        code="""
+        const q = cb_obj.value.trim().toLowerCase();
+        const new_opts = q === ""
+            ? all_opts.slice()
+            : all_opts.filter(([v, l]) => l.toLowerCase().includes(q));
+        if (new_opts.length > 0) {
+            loc_sel.options = new_opts;
+            if (!new_opts.some(([v]) => v === loc_sel.value)) {
+                loc_sel.value = new_opts[0][0];
+            }
+        }
+        """,
+    ))
+
+    loc_toggle_comp = Toggle(
+        label="Search ▼  location",
+        active=False,
+        button_type="light",
+        width=280,
+    )
+    loc_toggle_comp.js_on_change("active", CustomJS(
+        args=dict(search=loc_search_comp, btn=loc_toggle_comp),
+        code="""
+        search.visible = btn.active;
+        btn.label = btn.active ? 'Search ▲  location' : 'Search ▼  location';
+        """,
+    ))
+
     # ── CustomJS callback ─────────────────────────────────
     # Key format: "{ssp}|{component}|{wf}|{scale}|{loc_id}"
     # This table iterates over comps (rows) and ssps (columns) for a fixed workflow.
@@ -1200,7 +1225,7 @@ def _build_component_table_section(
         for (let j = 0; j < ssps.length; j++) {
             const ssp = ssps[j];
             const key = ssp + "|" + comp + "|" + wf_val + "|" + scale_val + "|" + loc_val;
-            const d   = data_dict[key];
+            const d   = window.FACTS_DATA[key];
             if (!d) { new_data[ssp].push(""); continue; }
             const idx = d.years.indexOf(year_val);
             if (idx === -1) { new_data[ssp].push(""); continue; }
@@ -1223,7 +1248,6 @@ def _build_component_table_section(
     cb = CustomJS(
         args=dict(
             source_comp=source_comp,
-            data_dict=data_dict,
             wf_sel=wf_sel, year_sel=year_sel,
             scale_sel=scale_sel, loc_sel=loc_sel,
             ssps=ssps, comps=comps,
@@ -1247,7 +1271,7 @@ def _build_component_table_section(
 </div>
 """, width=900)
 
-    return column(comp_head, row(wf_sel, year_sel, scale_sel, loc_sel), data_table)
+    return column(comp_head, row(wf_sel, year_sel, scale_sel, column(loc_toggle_comp, loc_search_comp, loc_sel)), data_table)
 
 
 def _build_stacked_bar_section(
@@ -1344,17 +1368,17 @@ def _build_stacked_bar_section(
             loc_ids=lids, loc_lat=llat, loc_lon=llon,
         )
 
-    init_data  = _build_arrays(default_comp, default_wf, default_scale,
-                               default_year, default_q_key)
+    # Start empty — bar chart is blank until user adds locations via the search panel
+    init_data  = dict(x=[], y=[], colors=[], ssp_labels=[], loc_names=[], loc_ids=[], loc_lat=[], loc_lon=[])
     source_bar = ColumnDataSource(data=init_data)
 
     # -- Figure --
     p_bar = figure(
-        x_range=(-0.6, n_locs - 0.4),
+        x_range=(-0.6, 0.4),   # JS_BAR expands this as locations are added
         width=1200,
         height=520,
         title=(
-            f"RSL Projections at {default_year} — SSP Comparison per Tide Gauge"
+            f"RSL Projections at {default_year} — Scenario Comparison per Tide Gauge"
             f"  ({default_wf}, {default_comp}, {default_scale}, median)"
         ),
         toolbar_location="above",
@@ -1365,7 +1389,7 @@ def _build_stacked_bar_section(
 
     hover = HoverTool(tooltips=[
         ("Location", "@loc_names"),
-        ("SSP",      "@ssp_labels"),
+        ("Scenario", "@ssp_labels"),
         ("Value",    "@y{0.1f} mm"),
         ("Lat",      "@loc_lat"),
         ("Lon",      "@loc_lon"),
@@ -1403,7 +1427,7 @@ def _build_stacked_bar_section(
         dummy_r   = p_bar.vbar(x="x", top="y", width=bar_w, color=color,
                                source=dummy_src, visible=False)
         legend_items.append(LegendItem(label=SSP_LABELS.get(ssp, ssp), renderers=[dummy_r]))
-    legend = Legend(items=legend_items, title="SSP Scenario",
+    legend = Legend(items=legend_items, title="Scenario",
                     title_text_font_style="bold", label_text_font_size="12px",
                     click_policy="hide", spacing=6)
     p_bar.add_layout(legend, "right")
@@ -1435,45 +1459,131 @@ def _build_stacked_bar_section(
         width=600,
     )
 
-    # -- Location dropdown: Toggle button reveals a CheckboxGroup panel.
-    # Toggle button uses Bokeh's own visible property — no HTML/script tricks needed.
+    # -- Location panel: Toggle button reveals a search bar + CheckboxGroup.
+    #
+    # UX: selected locations are always pinned to the top of the list (checked).
+    # Unselected locations appear below, filtered by the search query.
+    # Searching and checking a location adds it to the pinned top section.
+    # Clearing the search keeps previously pinned locations selected at the top.
+    #
+    # Data sources:
+    #   selected_src   — original indices of the currently selected (pinned) locations
+    #   loc_filter_src — maps current CheckboxGroup display index → original index (for JS_BAR)
+    #   guard_src      — re-entry guard: prevents circular callbacks when we rebuild the list
+    all_loc_labels = [f"{loc_names[i]}  (ID: {lid})" for i, lid in enumerate(loc_ids)]
+    selected_src   = ColumnDataSource(data={"orig_idx": []})
+    loc_filter_src = ColumnDataSource(data={"orig_idx": list(range(n_locs))})
+    guard_src      = ColumnDataSource(data={"busy": [0]})
+
     chk_loc = CheckboxGroup(
-        labels=[f"{loc_names[i]}  (ID: {lid})" for i, lid in enumerate(loc_ids)],
-        active=list(range(n_locs)),
+        labels=list(all_loc_labels),
+        active=[],       # start empty — user adds locations via search
         width=340,
-        visible=False,   # hidden until Toggle is clicked
+        visible=False,
+        stylesheets=[InlineStyleSheet(css="""
+            :host { max-height: 280px; overflow-y: auto;
+                    display: block; border: 1px solid #ddd;
+                    border-radius: 4px; padding: 4px; }
+        """)],
     )
+    loc_search = TextInput(placeholder="Search locations...", width=280, visible=False)
     loc_toggle = Toggle(
-        label=f"Locations ▼  (all {n_locs})",
-        active=False,
-        button_type="light",
-        width=220,
+        label="Locations ▼  (0 selected)",
+        active=False, button_type="light", width=220,
     )
+
+    # Shared rebuild snippet: reads selected_src + current search query, then:
+    #   1. Pins selected items to the top (always visible, checked)
+    #   2. Shows unselected items that match the search below
+    #   3. Updates loc_filter_src so JS_BAR always gets correct original indices
+    # guard_src prevents this from re-triggering the active callback recursively.
+    _JS_REBUILD = """
+    const q_val    = loc_search.value.trim().toLowerCase();
+    const sel_orig = selected_src.data.orig_idx.slice();
+    const sel_set  = new Set(sel_orig);
+    const n_sel    = sel_orig.length;
+
+    const top_labels = sel_orig.map(i => all_labels[i]);
+    const top_orig   = sel_orig.slice();
+    const bot_labels = [], bot_orig = [];
+    for (let i = 0; i < all_labels.length; i++) {
+        if (!sel_set.has(i) && (q_val === "" || all_labels[i].toLowerCase().includes(q_val))) {
+            bot_labels.push(all_labels[i]);
+            bot_orig.push(i);
+        }
+    }
+
+    guard_src.data = {"busy": [1]};
+    chk_loc.labels = top_labels.concat(bot_labels);
+    chk_loc.active = Array.from({length: n_sel}, (_, i) => i);
+    loc_filter_src.data = {"orig_idx": top_orig.concat(bot_orig)};
+    loc_filter_src.change.emit();
+    guard_src.data = {"busy": [0]};
+
+    const arrow = btn.active ? '▲' : '▼';
+    btn.label = 'Locations ' + arrow + '  (' + n_sel + ' selected)';
+    """
+
     loc_toggle.js_on_change("active", CustomJS(
-        args=dict(panel=chk_loc, btn=loc_toggle, n_total=n_locs),
+        args=dict(panel=chk_loc, search=loc_search, btn=loc_toggle),
         code="""
         panel.visible = btn.active;
+        search.visible = btn.active;
         const n_sel = panel.active.length;
-        const suffix = n_sel === n_total
-            ? 'all ' + n_total
-            : n_sel + ' / ' + n_total;
-        btn.label = btn.active
-            ? 'Locations ▲  (' + suffix + ')'
-            : 'Locations ▼  (' + suffix + ')';
+        const arrow = btn.active ? '▲' : '▼';
+        btn.label = 'Locations ' + arrow + '  (' + n_sel + ' selected)';
         """,
     ))
 
-    # Update toggle label when user checks/unchecks while panel is open
-    chk_loc.js_on_change("active", CustomJS(
-        args=dict(btn=loc_toggle, n_total=n_locs),
+    # Search: auto-add all matches to the pinned selection, then rebuild.
+    # Typing "san" → all "san..." locations jump to the top (checked) immediately.
+    # Clearing the search → pinned locations stay selected; full unselected list shows below.
+    loc_search.js_on_change("value", CustomJS(
+        args=dict(chk_loc=chk_loc, loc_filter_src=loc_filter_src, selected_src=selected_src,
+                  guard_src=guard_src, btn=loc_toggle, loc_search=loc_search,
+                  all_labels=all_loc_labels),
         code="""
-        const n_sel = cb_obj.active.length;
-        const suffix = n_sel === n_total
-            ? 'all ' + n_total
-            : n_sel + ' / ' + n_total;
-        const arrow = btn.active ? '▲' : '▼';
-        btn.label = 'Locations ' + arrow + '  (' + suffix + ')';
-        """,
+        const q_typed = cb_obj.value.trim().toLowerCase();
+        if (q_typed !== "") {
+            // Auto-add every matching location to the pinned selection
+            const cur_sel = new Set(selected_src.data.orig_idx);
+            const new_sel = selected_src.data.orig_idx.slice();
+            for (let i = 0; i < all_labels.length; i++) {
+                if (!cur_sel.has(i) && all_labels[i].toLowerCase().includes(q_typed)) {
+                    new_sel.push(i);
+                }
+            }
+            selected_src.data = {"orig_idx": new_sel};
+        }
+        // Rebuild: pinned items at top, remaining unselected filtered below
+        // (_JS_REBUILD declares its own const q_val — do NOT declare q_val above)
+        """ + _JS_REBUILD,
+    ))
+
+    # Check/uncheck: update selected_src, then rebuild so pinned section stays correct
+    chk_loc.js_on_change("active", CustomJS(
+        args=dict(chk_loc=chk_loc, loc_filter_src=loc_filter_src, selected_src=selected_src,
+                  guard_src=guard_src, btn=loc_toggle, loc_search=loc_search,
+                  all_labels=all_loc_labels),
+        code="""
+        if (guard_src.data.busy[0]) return;
+
+        // Determine new set of selected original indices from current active list.
+        // Display layout: [pinned selected (0..n_old_sel-1)] [unselected matches (n_old_sel..)]
+        const orig_map   = loc_filter_src.data.orig_idx;
+        const n_old_sel  = selected_src.data.orig_idx.length;
+        const active_set = new Set(cb_obj.active);
+        const new_sel    = [];
+
+        for (let i = 0; i < n_old_sel; i++) {          // previously pinned — keep if still checked
+            if (active_set.has(i)) new_sel.push(selected_src.data.orig_idx[i]);
+        }
+        for (let i = n_old_sel; i < cb_obj.labels.length; i++) {  // unselected — add if newly checked
+            if (active_set.has(i)) new_sel.push(orig_map[i]);
+        }
+
+        selected_src.data = {"orig_idx": new_sel};
+        """ + _JS_REBUILD,
     ))
 
     # -- CustomJS callback --
@@ -1497,9 +1607,11 @@ def _build_stacked_bar_section(
     const active_ssps    = plot_ssps.filter((_, i) => active_ssp_set.has(i));
     const n_active_ssps  = active_ssps.length;
 
-    // Active locations from CheckboxGroup (.active is an array of checked indices)
-    const active_loc_indices = Array.from(chk_loc.active);
-    const n_active_locs = active_loc_indices.length;
+    // Active locations from CheckboxGroup.
+    // chk_loc shows only the filtered subset — loc_filter_src maps filtered index → original index.
+    const filter_orig     = loc_filter_src.data.orig_idx;
+    const active_filtered = Array.from(chk_loc.active);
+    const n_active_locs   = active_filtered.length;
 
     if (n_active_ssps === 0 || n_active_locs === 0) {
         source_bar.data = {
@@ -1518,13 +1630,14 @@ def _build_stacked_bar_section(
     const loc_names_out = [], loc_ids_out = [], loc_lat_out = [], loc_lon_out = [];
 
     for (let li2 = 0; li2 < n_active_locs; li2++) {
-        const li     = active_loc_indices[li2];
+        const fi     = active_filtered[li2];           // index in filtered CheckboxGroup
+        const li     = filter_orig[fi];                // original index in full loc arrays
         const loc_id = (scale === "global") ? -1 : loc_ids_arr[li];
         for (let si = 0; si < n_active_ssps; si++) {
             const ssp = active_ssps[si];
             const x   = li2 + si * new_bar_w - new_half_group + new_bar_w / 2.0;
             const key = ssp + "|" + comp + "|" + wf + "|" + scale + "|" + loc_id;
-            const d   = data_dict[key];
+            const d   = window.FACTS_DATA[key];
             let   val = 0.0;
             if (d) {
                 const idx = d.years.indexOf(year);
@@ -1553,8 +1666,9 @@ def _build_stacked_bar_section(
     const new_ticks = [];
     const new_names = [];
     for (let li2 = 0; li2 < n_active_locs; li2++) {
+        const li = filter_orig[active_filtered[li2]];
         new_ticks.push(li2);
-        new_names.push(loc_names_arr[active_loc_indices[li2]]);
+        new_names.push(loc_names_arr[li]);
     }
     x_ticker.ticks = new_ticks;
     label_cds.data = {pos: new_ticks, name: new_names};
@@ -1572,7 +1686,6 @@ def _build_stacked_bar_section(
     cb = CustomJS(
         args=dict(
             source_bar    = source_bar,
-            data_dict     = data_dict,
             p_bar         = p_bar,
             label_cds     = label_cds,
             wf_sel        = wf_sel,
@@ -1582,6 +1695,7 @@ def _build_stacked_bar_section(
             q_sel         = q_sel,
             chk_ssp       = chk_ssp,
             chk_loc       = chk_loc,
+            loc_filter_src= loc_filter_src,
             x_ticker      = x_ticker,
             plot_ssps     = plot_ssps,
             loc_ids_arr   = loc_ids,
@@ -1662,17 +1776,17 @@ def _build_stacked_bar_section(
     ))
 
     ssp_chk_label = Div(
-        text="<b style='font-size:12px;'>SSP scenarios:</b>",
+        text="<b style='font-size:12px;'>Scenarios:</b>",
         width=130,
         styles={"padding-top": "6px"},
     )
 
     bar_head = Div(text="""
 <div style="margin-top:32px;margin-bottom:6px;">
-  <u>FACTS <b>sea-level projections — SSP comparison</b></u> (GROUPED BAR CHART)<br>
-  Each group = one tide gauge location. Bars within each group = selected SSP scenarios.<br>
+  <u>FACTS <b>sea-level projections — scenario comparison</b></u> (GROUPED BAR CHART)<br>
+  Each group = one tide gauge location. Bars within each group = selected scenarios.<br>
   Select <b>workflow</b>, <b>component</b>, <b>scale</b>, <b>year</b>, <b>quantile</b>,
-  <b>SSP scenarios</b>, and <b>locations</b>. Tick any combination of locations to compare them.
+  <b>scenarios</b>, and <b>locations</b>. Tick any combination of locations to compare them.
   Hover over any bar for location details and RSL value (mm).
 </div>
 """, width=1200)
@@ -1681,7 +1795,7 @@ def _build_stacked_bar_section(
         bar_head,
         row(wf_sel, comp_sel, scale_sel, year_sel, q_sel, unit_sel_bar),
         row(ssp_chk_label, chk_ssp),
-        row(column(loc_toggle, chk_loc)),
+        row(column(loc_toggle, loc_search, chk_loc)),
         y_bar_slider,
         p_bar,
     )
@@ -1799,13 +1913,18 @@ def build_dashboard(
         )))
 
     # ── Y range from data ──────────────────────────────────
-    all_lo = [v for d in data_dict.values() for v in d["lo"] if v is not None]
-    all_hi = [v for d in data_dict.values() for v in d["hi"] if v is not None]
-    ymax_data   = float(max(all_hi)) if all_hi else YMAX_FIXED
-    y_pad       = 0.05 * ymax_data
+    # Initial view is scaled to the 6 default slots so the lines are visible on first load.
+    # The slider end extends to the global data max so users can explore other workflows.
+    slot_hi = [v for sd in slot_defaults
+               for v in data_dict.get(sd["key"], {}).get("hi", []) if v is not None]
+    all_hi  = [v for d in data_dict.values() for v in d["hi"] if v is not None]
+    ymax_slot   = float(max(slot_hi)) if slot_hi else YMAX_FIXED
+    ymax_data   = float(max(all_hi))  if all_hi  else YMAX_FIXED
+    y_pad       = 0.05 * ymax_slot
     # y_init_min fixed at 0 so screenshots are comparable across SSPs/datasets
     y_init_min  = 0.0
-    y_init_max  = min(YMAX_FIXED, ymax_data + y_pad)
+    y_init_max  = ymax_slot + y_pad
+    y_slider_end = YMAX_FIXED
     x_init_min  = float(min(years)) if years else XMIN_FIXED
     x_init_max  = float(max(years)) if years else XMAX_FIXED
 
@@ -1822,8 +1941,10 @@ def build_dashboard(
     p.toolbar.autohide = False
 
     slot_renderers = []
+    colors = []
     for i, sd in enumerate(slot_defaults):
         color = ssp_color(sd["ssp"], i)
+        colors.append(color)
         src   = sources[i]
         style = COMPONENT_STYLES.get(sd["comp"], "solid")
 
@@ -1890,10 +2011,45 @@ def build_dashboard(
         _dis_ssp  = single_nc_mode and len(ssp_opts)  == 1
         _dis_comp = single_nc_mode and len(comp_opts) == 1
         wf_sel   = Select(title="Workflow",   value=sd["wf"],    options=wf_opts,    width=170, disabled=_dis_wf)
-        ssp_sel  = Select(title="SSP",        value=sd["ssp"],   options=ssp_opts,   width=140, disabled=_dis_ssp)
+        ssp_sel  = Select(title="Scenario",    value=sd["ssp"],   options=ssp_opts,   width=140, disabled=_dis_ssp)
         comp_sel = Select(title="Component",  value=sd["comp"],  options=comp_opts,  width=200, disabled=_dis_comp)
         scale_sel= Select(title="Scale",      value=sd["scale"], options=scale_opts, width=140)
-        loc_sel  = Select(title="Location",   value=sd["loc"],   options=loc_options_all, width=240)
+        loc_sel  = Select(title="Location", value=sd["loc"], options=loc_options_all, width=240)
+
+        # Search bar: filters loc_sel.options in real-time. Hidden until toggle is clicked.
+        loc_search_slot = TextInput(placeholder="Search...", width=240, visible=False)
+        loc_search_slot.js_on_change("value", CustomJS(
+            args=dict(loc_sel=loc_sel, all_opts=loc_options_all),
+            code="""
+            const q = cb_obj.value.trim().toLowerCase();
+            const new_opts = q === ""
+                ? all_opts.slice()
+                : all_opts.filter(([v, l]) => l.toLowerCase().includes(q));
+            if (new_opts.length > 0) {
+                loc_sel.options = new_opts;
+                if (!new_opts.some(([v]) => v === loc_sel.value)) {
+                    loc_sel.value = new_opts[0][0];
+                }
+            }
+            """,
+        ))
+
+        # Toggle shows/hides the search bar. loc_sel always stays visible (Bokeh Select
+        # does not reliably re-flow when toggled from visible=False to True in a column layout).
+        _init_loc_lbl = next((lbl for v, lbl in loc_options_all if v == sd["loc"]), sd["loc"])
+        loc_toggle_slot = Toggle(
+            label=f"Search ▼  location",
+            active=False,
+            button_type="light",
+            width=240,
+        )
+        loc_toggle_slot.js_on_change("active", CustomJS(
+            args=dict(search_box=loc_search_slot, btn=loc_toggle_slot),
+            code="""
+            search_box.visible = btn.active;
+            btn.label = btn.active ? 'Search ▲  location' : 'Search ▼  location';
+            """,
+        ))
 
         color_box    = Div(text=_color_box_html(color),  width=30,  height=50)
         style_box    = Div(text=_style_box_html(style),  width=80,  height=50)
@@ -1910,6 +2066,7 @@ def build_dashboard(
         slot_widgets.append({
             "wf": wf_sel, "ssp": ssp_sel, "comp": comp_sel,
             "scale": scale_sel, "loc": loc_sel,
+            "loc_toggle": loc_toggle_slot, "loc_search": loc_search_slot,
             "color_box": color_box, "style_box": style_box,
             "loc_info": loc_info_div, "chk": chk, "row_label": row_label,
         })
@@ -1931,7 +2088,7 @@ def build_dashboard(
     # loc.value is "-1" for Global Mean SL; a positive integer string for a tide gauge.
     JS_UPDATE = """
     const key = ssp.value + "|" + comp.value + "|" + wf.value + "|" + scale.value + "|" + loc.value;
-    const d   = data_dict[key];
+    const d   = window.FACTS_DATA[key];
 
     if (!d) {
         console.warn("No data for key:", key);
@@ -1954,8 +2111,11 @@ def build_dashboard(
         };
         source.change.emit();
 
-        // Colour from SSP
-        const c = ssp_colors[ssp.value] || "black";
+        // Restore band visibility — may have been hidden by a previous no-data selection
+        band.visible = chk.active;
+
+        // Colour: SSP_COLORS for known SSPs, fixed slot color for everything else
+        const c = ssp_colors[ssp.value] || slot_color;
         band.glyph.fill_color       = c;
         r_solid.glyph.line_color    = c;
         r_dashed.glyph.line_color   = c;
@@ -2028,14 +2188,14 @@ def build_dashboard(
     for i, (sw, sr) in enumerate(zip(slot_widgets, slot_renderers)):
         common = dict(
             source=sources[i],
-            data_dict=data_dict,
             wf=sw["wf"], ssp=sw["ssp"], comp=sw["comp"],
             scale=sw["scale"], loc=sw["loc"],
             chk=sw["chk"],
             band=sr["band"], r_solid=sr["solid"], r_dashed=sr["dashed"],
             r_dotted=sr["dotted"], r_circle=sr["circle"], r_diamond=sr["diamond"],
             r_asterisk=sr["asterisk"], r_triangle=sr["triangle"],
-            ssp_colors=SSP_COLORS,
+            ssp_colors={s: SSP_COLORS[s] for s in ssps if s in SSP_COLORS},
+            slot_color=colors[i],
             comp_styles=COMPONENT_STYLES,
             color_box=sw["color_box"],
             style_box=sw["style_box"],
@@ -2064,7 +2224,7 @@ def build_dashboard(
     )
     y_slider = RangeSlider(
         title="Y range",
-        start=YMIN_FIXED, end=YMAX_FIXED,
+        start=YMIN_FIXED, end=y_slider_end,
         value=(y_init_min, y_init_max),
         step=y_step, width=600,
     )
@@ -2093,6 +2253,8 @@ def build_dashboard(
     ))
 
     # ── Layout rows ────────────────────────────────────────
+    # loc_search sits above loc_sel in a compact column — lets users type to filter
+    # 1000+ locations without scrolling through a raw dropdown.
     ctrl_rows = []
     for sw in slot_widgets:
         ctrl_rows.append(row(
@@ -2100,7 +2262,7 @@ def build_dashboard(
             sw["wf"], sw["ssp"], sw["color_box"],
             sw["comp"], sw["style_box"],
             sw["scale"],
-            sw["loc"], sw["loc_info"], sw["chk"],
+            column(sw["loc_toggle"], sw["loc_search"], sw["loc"]), sw["loc_info"], sw["chk"],
         ))
     controls_block = column(*ctrl_rows, row(q_line_sel, unit_sel), x_slider, y_slider)
 
@@ -2108,9 +2270,8 @@ def build_dashboard(
     desc_head = Div(text=f"""
 <div style="margin-bottom:8px;">
 <br>
-  <u>FACTS <b>sea-level projections</b></u><br>
   <b>{title}</b><br><br>
-  Select a <b>workflow</b>, <b>SSP</b> and <b>Component</b> to view
+  Select a <b>workflow</b>, <b>Scenario</b> and <b>Component</b> to view
   <u>median</u> (p50) and <u>17th&#8211;83rd percentile</u> (shading).<br>
   For a description of <b>Workflows</b>, see the table below.
 </div>
@@ -2118,9 +2279,8 @@ def build_dashboard(
 
     # ── Legend ─────────────────────────────────────────────
     _ssp_color_entries = " &nbsp;\n    ".join(
-        f'<span style="color:{SSP_COLORS.get(s, "#808080")}">&#9632;</span> {SSP_LABELS.get(s, s)}'
-        for s in ssps
-        if s in SSP_COLORS
+        f'<span style="color:{SSP_COLORS.get(s, _FALLBACK_COLORS[i % len(_FALLBACK_COLORS)])}">&#9632;</span> {SSP_LABELS.get(s, s)}'
+        for i, s in enumerate(ssps)
     )
     legend_html = f"""
 <div style="margin-top:8px;line-height:2.0;font-size:13px;">
@@ -2135,7 +2295,7 @@ def build_dashboard(
     ▲ &nbsp;VLM
   </div>
   <div>
-    <b>SSP colours:</b> &nbsp;
+    <b>Scenario colours:</b> &nbsp;
     {_ssp_color_entries}
   </div>
 </div>
@@ -2164,13 +2324,13 @@ def build_dashboard(
 <div style="background:#f0f4fa;border:1px solid #c5d3e8;border-radius:5px;
             padding:10px 14px;margin-bottom:10px;font-size:13px;font-family:Arial,sans-serif;">
   <b>Single-file mode</b> &mdash; auto-detected from filename:<br>
-  &nbsp;&nbsp;<b>SSP:</b> {ssp_label} &nbsp;|&nbsp;
+  &nbsp;&nbsp;<b>Scenario:</b> {ssp_label} &nbsp;|&nbsp;
   <b>Component:</b> {comp_label} &nbsp;|&nbsp;
   <b>Workflow:</b> {wf_label}<br>
   &nbsp;&nbsp;<b>Year range:</b> {yr_start}&ndash;{yr_end} &nbsp;|&nbsp;
   <b>Locations:</b> {n_locs} tide gauge stations<br>
   <span style="color:#666;font-size:11px;">
-    Workflow, SSP, and Component selectors are fixed to the values above.
+    Workflow, Scenario, and Component selectors are fixed to the values above.
     Use the Location selector in each line slot to compare different stations.
   </span>
 </div>
@@ -2201,7 +2361,25 @@ def build_dashboard(
     layout_items.append(citation)
 
     dashboard = column(*layout_items)
+
+    # Serialize data_dict ONCE as a global JS variable injected into the HTML.
+    # Previously it was passed as a CustomJS arg to every callback (7 copies × ~30 MB).
+    # Writing it as window.FACTS_DATA means Bokeh never serializes it at all —
+    # all callbacks read window.FACTS_DATA directly, saving ~6/7 of the data payload.
+    # Step 1: write valid Bokeh HTML via save() — data_dict is no longer in any CustomJS
+    # args so Bokeh will NOT serialize it; the output is just the UI skeleton.
     save(dashboard, filename=str(output_path), resources=INLINE, title=title)
+
+    # Step 2: post-process — inject data_dict ONCE as window.FACTS_DATA so all
+    # callbacks can read it without 7x duplication.
+    # Escape </ → <\/ so the browser HTML parser never treats a location name or data
+    # value containing "</script>" as closing our script block.
+    html = output_path.read_text(encoding="utf-8")
+    data_json = json.dumps(data_dict).replace("</", "<\\/")
+    data_script = "<script>\nwindow.FACTS_DATA = " + data_json + ";\n</script>\n"
+    html = html.replace("</head>", data_script + "</head>", 1)
+    output_path.write_text(html, encoding="utf-8")
+
     log.info("Dashboard saved → %s", output_path.resolve())
     log.info("Output size      : %.1f MB", output_path.stat().st_size / (1024 * 1024))
 
@@ -2246,6 +2424,30 @@ examples:
             "from a single file rather than a full experiment tree."
         ),
     )
+    parser.add_argument(
+        "--confidence-root", type=Path, default=None, metavar="DIR",
+        help=(
+            "Root directory of AR6-style pre-computed confidence level files. "
+            "Expected structure: DIR/{confidence_level}/{ssp}/{component}_{ssp}_{confidence_level}_values.nc. "
+            "Use with --confidence-level to select low_confidence or medium_confidence."
+        ),
+    )
+    parser.add_argument(
+        "--confidence-level", default="medium_confidence",
+        metavar="LEVEL",
+        help=(
+            "Confidence level sub-directory to load (default: medium_confidence). "
+            "Options: medium_confidence, low_confidence."
+        ),
+    )
+    parser.add_argument(
+        "--location-lst", type=Path, default=None, metavar="FILE",
+        help=(
+            "Path to a location.lst file (whitespace-separated name/id/lat/lon) used to "
+            "resolve tide gauge names. Optional — if omitted the dashboard searches for "
+            "location.lst automatically relative to the input data directory."
+        ),
+    )
     parser.add_argument("--output", type=Path, default=None, metavar="FILE",
                         help="Output HTML path (default: facts_dashboard.html next to exp-root)")
     parser.add_argument("--title", default=None,
@@ -2288,9 +2490,41 @@ examples:
         log.info("Done.")
         return
 
+    # ── Confidence file mode ─────────────────────────────────
+    if args.confidence_root:
+        conf_root = args.confidence_root.resolve()
+        if not conf_root.is_dir():
+            log.error("--confidence-root not found: %s", conf_root)
+            sys.exit(1)
+
+        default_out = conf_root / "facts_dashboard.html"
+        output_path = (args.output or default_out).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        log.info("FACTS Dashboard Generator — confidence file mode")
+        log.info("  conf-root  : %s", conf_root)
+        log.info("  conf-level : %s", args.confidence_level)
+        log.info("  output     : %s", output_path)
+
+        result = load_confidence_files(conf_root, args.confidence_level, args.location_lst)
+        title  = args.title or f"FACTS — {args.confidence_level.replace('_', ' ').title()}"
+
+        log.info("SSPs found : %s", result["ssps"])
+        log.info("Year span  : %s – %s  (%d time steps)",
+                 result["years"][0], result["years"][-1], len(result["years"]))
+        log.info("Building Bokeh dashboard ...")
+        build_dashboard(
+            result["data_dict"], result["years"],
+            result["locations"], result["location_meta"],
+            result["ssps"], result["wfs"],
+            output_path, title=title,
+        )
+        log.info("Done.")
+        return
+
     # ── Multi-file / experiment-tree mode ────────────────────
     if not args.exp_root and not args.ssp_dirs:
-        parser.error("Provide at least one of --exp-root, --ssp-dir, or --single-nc-file")
+        parser.error("Provide at least one of --exp-root, --ssp-dir, --single-nc-file, or --confidence-root")
 
     exp_root = args.exp_root.resolve() if args.exp_root else None
     if exp_root and not exp_root.is_dir():
