@@ -430,8 +430,8 @@ def load_location_list(entries: list) -> list:
     for _, _, _, exp_dir in entries:
         p = exp_dir / "location.lst"
         if p.exists():
-            df = pd.read_csv(p, sep=r"\s+", header=None, names=["name", "id", "lat", "lon"],
-                             engine="python", on_bad_lines="skip")
+            df = pd.read_csv(p, sep="\t", header=None, names=["name", "id", "lat", "lon"],
+                             engine="python")
             log.info("Loaded %d locations from %s", len(df), p)
             return df.to_dict("records")
     log.warning("No location.lst found in any experiment directory")
@@ -627,7 +627,7 @@ def _find_best_location_lst(nc_path: Path, loc_ids_in_file: list) -> dict:
         if not lst.exists():
             continue
         try:
-            df = pd.read_csv(lst, sep=r"\s+", header=None, names=["name", "id", "lat", "lon"])
+            df = pd.read_csv(lst, sep="\t", header=None, names=["name", "id", "lat", "lon"])
             matched = len(set(int(x) for x in df["id"]) & target_ids)
             candidates.append((matched, lst, df))
         except Exception:
@@ -842,7 +842,7 @@ def load_confidence_files(conf_root: Path, confidence_level: str = "medium_confi
     for lst in candidates:
         if lst and lst.exists():
             try:
-                df = pd.read_csv(lst, sep=r"\s+", header=None, names=["name", "id", "lat", "lon"])
+                df = pd.read_csv(lst, sep="\t", header=None, names=["name", "id", "lat", "lon"])
                 lst_map = {int(r["id"]): str(r["name"]) for _, r in df.iterrows()}
                 log.info("[conf] Resolved location names from %s", lst)
                 break
