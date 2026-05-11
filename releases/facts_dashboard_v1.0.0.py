@@ -135,7 +135,9 @@ WF_LABELS = {
     "wf3e": "wf3e — emulandice GrIS, DeConto21 AIS, emulandice glaciers (to 2100)",
     "wf3f": "wf3f — FittedISMIP GrIS, DeConto21 AIS, AR5 glaciers (to 2300)",
     "wf4":  "wf4  — Bamber19 ice sheets, AR5 glaciers (to 2300)",
-    "conf": "conf — AR6-style pre-computed confidence levels",
+    "conf":     "conf — AR6-style pre-computed confidence levels",
+    "med_conf": "med_conf — medium-confidence AR6 projections",
+    "low_conf": "low_conf — low-confidence AR6 projections",
 }
 
 # Component → line style (drives the actual rendered line style)
@@ -430,8 +432,8 @@ def load_location_list(entries: list) -> list:
     for _, _, _, exp_dir in entries:
         p = exp_dir / "location.lst"
         if p.exists():
-            df = pd.read_csv(p, sep=r"\s+", header=None, names=["name", "id", "lat", "lon"],
-                             engine="python", on_bad_lines="skip")
+            df = pd.read_csv(p, sep="\t", header=None, names=["name", "id", "lat", "lon"],
+                             engine="python")
             log.info("Loaded %d locations from %s", len(df), p)
             return df.to_dict("records")
     log.warning("No location.lst found in any experiment directory")
@@ -627,7 +629,7 @@ def _find_best_location_lst(nc_path: Path, loc_ids_in_file: list) -> dict:
         if not lst.exists():
             continue
         try:
-            df = pd.read_csv(lst, sep=r"\s+", header=None, names=["name", "id", "lat", "lon"])
+            df = pd.read_csv(lst, sep="\t", header=None, names=["name", "id", "lat", "lon"])
             matched = len(set(int(x) for x in df["id"]) & target_ids)
             candidates.append((matched, lst, df))
         except Exception:
@@ -743,7 +745,8 @@ def load_single_nc(nc_path: Path) -> dict:
     }
 
 
-def load_confidence_files(conf_root: Path, confidence_level: str = "medium_confidence",
+def load_confidence_files(conf_root: Path,
+                          confidence_level: "str | list[str]" = "medium_confidence",
                           location_lst: Path = None) -> dict:
     """
     Load AR6-style pre-computed confidence level NC files.
@@ -756,75 +759,99 @@ def load_confidence_files(conf_root: Path, confidence_level: str = "medium_confi
         sea_level_change shape: (quantiles=107, years, locations)
 
     Quantile indices used: p05=7, p17=20, p50=53, p83=86, p95=99
-    Workflow tag: "conf" (synthetic — these are not workflow runs)
+
+    Workflow tags:
+        - Single level  → "conf"      (backward compatible)
+        - Both levels   → "med_conf" / "low_conf"  (lets slots show each independently)
 
     Args:
         conf_root:        Root of confidence file tree (contains low_confidence/, medium_confidence/).
-        confidence_level: Sub-directory to use ("medium_confidence" or "low_confidence").
+        confidence_level: Sub-directory to use: "medium_confidence", "low_confidence", or
+                          a list of both (e.g. ["medium_confidence", "low_confidence"]).
+                          Pass "both" as a shortcut to load both directories.
 
     Returns:
         dict with keys: data_dict, years, locations, location_meta, ssps, wfs
     """
-    conf_dir = conf_root / confidence_level
-    if not conf_dir.is_dir():
-        raise FileNotFoundError(f"Confidence level directory not found: {conf_dir}")
+    # Normalise to a list
+    if confidence_level == "both":
+        levels = ["medium_confidence", "low_confidence"]
+    elif isinstance(confidence_level, str):
+        levels = [confidence_level]
+    else:
+        levels = list(confidence_level)
 
+    # Workflow tag: single level keeps "conf" for backward compat; multiple → distinct tags
+    _LEVEL_WF = {
+        "medium_confidence": "med_conf",
+        "low_confidence":    "low_conf",
+    }
     data_dict:     dict = {}
     location_meta: dict = {}
     locations_seen: dict = {}   # loc_id → {name, id, lat, lon}
     years_ref = None
     ssps_found: set = set()
+    wfs_found:  list = []
 
-    for ssp_dir in sorted(conf_dir.iterdir()):
-        if not ssp_dir.is_dir():
-            continue
-        ssp_tag = ssp_dir.name   # e.g. "ssp585"
+    for level in levels:
+        conf_dir = conf_root / level
+        if not conf_dir.is_dir():
+            raise FileNotFoundError(f"Confidence level directory not found: {conf_dir}")
 
-        for nc_path in sorted(ssp_dir.glob("*_values.nc")):
-            # Filename: {component}_{ssp}_{confidence_level}_values.nc
-            # First underscore-delimited token is the component name.
-            raw_comp = nc_path.stem.split("_")[0]
-            comp = _CONF_COMP_MAP.get(raw_comp, raw_comp)
+        wf_tag = _LEVEL_WF.get(level, "conf")
+        if wf_tag not in wfs_found:
+            wfs_found.append(wf_tag)
 
-            try:
-                ds  = xr.open_dataset(nc_path)
-                sl  = ds["sea_level_change"].values   # (quantiles, years, locations)
-                yrs = ds.years.values.tolist()
-                lids = ds.locations.values.tolist()
-                lats = ds["lat"].values.tolist() if "lat" in ds else []
-                lons = ds["lon"].values.tolist() if "lon" in ds else []
-                ds.close()
-            except Exception as exc:
-                log.warning("Failed to load confidence file %s: %s", nc_path.name, exc)
+        for ssp_dir in sorted(conf_dir.iterdir()):
+            if not ssp_dir.is_dir():
                 continue
+            ssp_tag = ssp_dir.name   # e.g. "ssp585"
 
-            if years_ref is None:
-                years_ref = yrs
-            ssps_found.add(ssp_tag)
+            for nc_path in sorted(ssp_dir.glob("*_values.nc")):
+                # Filename: {component}_{ssp}_{confidence_level}_values.nc
+                # First underscore-delimited token is the component name.
+                raw_comp = nc_path.stem.split("_")[0]
+                comp = _CONF_COMP_MAP.get(raw_comp, raw_comp)
 
-            for li, raw_lid in enumerate(lids):
-                loc_id = int(raw_lid)
-                key = f"{ssp_tag}|{comp}|conf|local|{loc_id}"
-                data_dict[key] = {
-                    "years": yrs,
-                    "vlo":   _r1(sl[_CONF_Q_IDX["vlo"], :, li]),
-                    "lo":    _r1(sl[_CONF_Q_IDX["lo"],  :, li]),
-                    "med":   _r1(sl[_CONF_Q_IDX["med"], :, li]),
-                    "hi":    _r1(sl[_CONF_Q_IDX["hi"],  :, li]),
-                    "vhi":   _r1(sl[_CONF_Q_IDX["vhi"], :, li]),
-                }
-                if loc_id not in locations_seen:
-                    lat = float(lats[li]) if li < len(lats) else None
-                    lon = float(lons[li]) if li < len(lons) else None
-                    locations_seen[loc_id] = {
-                        "name": f"ID {loc_id}",
-                        "id":   loc_id,
-                        "lat":  lat,
-                        "lon":  lon,
+                try:
+                    ds  = xr.open_dataset(nc_path)
+                    sl  = ds["sea_level_change"].values   # (quantiles, years, locations)
+                    yrs = ds.years.values.tolist()
+                    lids = ds.locations.values.tolist()
+                    lats = ds["lat"].values.tolist() if "lat" in ds else []
+                    lons = ds["lon"].values.tolist() if "lon" in ds else []
+                    ds.close()
+                except Exception as exc:
+                    log.warning("Failed to load confidence file %s: %s", nc_path.name, exc)
+                    continue
+
+                if years_ref is None:
+                    years_ref = yrs
+                ssps_found.add(ssp_tag)
+
+                for li, raw_lid in enumerate(lids):
+                    loc_id = int(raw_lid)
+                    key = f"{ssp_tag}|{comp}|{wf_tag}|local|{loc_id}"
+                    data_dict[key] = {
+                        "years": yrs,
+                        "vlo":   _r1(sl[_CONF_Q_IDX["vlo"], :, li]),
+                        "lo":    _r1(sl[_CONF_Q_IDX["lo"],  :, li]),
+                        "med":   _r1(sl[_CONF_Q_IDX["med"], :, li]),
+                        "hi":    _r1(sl[_CONF_Q_IDX["hi"],  :, li]),
+                        "vhi":   _r1(sl[_CONF_Q_IDX["vhi"], :, li]),
                     }
-                    location_meta[loc_id] = {"lat": lat, "lon": lon}
+                    if loc_id not in locations_seen:
+                        lat = float(lats[li]) if li < len(lats) else None
+                        lon = float(lons[li]) if li < len(lons) else None
+                        locations_seen[loc_id] = {
+                            "name": f"ID {loc_id}",
+                            "id":   loc_id,
+                            "lat":  lat,
+                            "lon":  lon,
+                        }
+                        location_meta[loc_id] = {"lat": lat, "lon": lon}
 
-            log.info("[conf] Loaded %s | %s | %s", ssp_tag, comp, nc_path.name)
+                log.info("[%s] Loaded %s | %s | %s", wf_tag, ssp_tag, comp, nc_path.name)
 
     if not data_dict:
         raise RuntimeError(f"No confidence data loaded from {conf_dir}")
@@ -842,7 +869,7 @@ def load_confidence_files(conf_root: Path, confidence_level: str = "medium_confi
     for lst in candidates:
         if lst and lst.exists():
             try:
-                df = pd.read_csv(lst, sep=r"\s+", header=None, names=["name", "id", "lat", "lon"])
+                df = pd.read_csv(lst, sep="\t", header=None, names=["name", "id", "lat", "lon"])
                 lst_map = {int(r["id"]): str(r["name"]) for _, r in df.iterrows()}
                 log.info("[conf] Resolved location names from %s", lst)
                 break
@@ -855,15 +882,15 @@ def load_confidence_files(conf_root: Path, confidence_level: str = "medium_confi
     locations = sorted(locations_seen.values(), key=lambda x: x["id"])
     ssps = sorted(ssps_found, key=lambda s: list(SSP_COLORS.keys()).index(s) if s in SSP_COLORS else 99)
 
-    log.info("[conf] %d data series | %d SSPs | %d location(s)",
-             len(data_dict), len(ssps), len(locations))
+    log.info("[conf] %d data series | %d SSPs | %d location(s) | workflows: %s",
+             len(data_dict), len(ssps), len(locations), wfs_found)
     return {
         "data_dict":     data_dict,
         "years":         years_ref or [],
         "locations":     locations,
         "location_meta": location_meta,
         "ssps":          ssps,
-        "wfs":           ["conf"],
+        "wfs":           wfs_found,
     }
 
 
@@ -1105,9 +1132,18 @@ def _build_component_table_section(
     """
     default_wf       = wfs[0]
     default_year_int = 2100
-    default_scale    = "global"
-    default_loc_int  = -1   # global mean SL — matches professor's reference table default
     comps = COMPONENTS      # [total, AIS, GrIS, glaciers, sterodynamics, landwaterstorage, vlm]
+
+    # Confidence files only have "local" keys — no global-mean variant exists.
+    # Detect this by checking whether any "global" key is present in data_dict.
+    has_global = any("|global|" in k for k in data_dict)
+    if has_global:
+        default_scale   = "global"
+        default_loc_int = -1   # global mean SL
+    else:
+        # Confidence mode: force "local" and use the first real location id.
+        default_scale = "local"
+        default_loc_int = int(loc_options_all[0][0]) if loc_options_all else -1
 
     # Pre-populate for default selections
     init_data = {"component": list(comps)}
@@ -1165,7 +1201,12 @@ def _build_component_table_section(
     year_sel = Select(title="Year",             value=default_year,  options=year_opts, width=120)
     scale_sel= Select(title="Scale",            value=default_scale,
                       options=[("global","Global Mean SL"), ("local","Local RSL")], width=160)
-    loc_sel  = Select(title="Location (local)", value=str(default_loc_int),
+    # In confidence mode the location dropdown starts at the first real location;
+    # in global mode it starts at the placeholder "-1" entry.
+    loc_default_str = str(default_loc_int)
+    if not has_global and loc_options_all:
+        loc_default_str = loc_options_all[0][0]
+    loc_sel  = Select(title="Location (local)", value=loc_default_str,
                       options=loc_options_all, width=280)
 
     # Search bar: hidden until toggle is clicked.
@@ -1908,8 +1949,15 @@ def build_dashboard(
     sources = []
     for sd in slot_defaults:
         d = data_dict.get(sd["key"], empty_data(len(years)))
+        n = len(d.get("years", []))
+        loc_info_sd = location_meta_js.get(sd["loc"], {})
+        loc_nm_sd   = loc_info_sd.get("name", sd["loc"])
+        ssp_lbl_sd  = SSP_LABELS.get(sd["ssp"], sd["ssp"])
         sources.append(ColumnDataSource(data=dict(
             years=d["years"], med=d["med"], lo=d["lo"], hi=d["hi"],
+            loc_name=[loc_nm_sd]   * n,
+            ssp_label=[ssp_lbl_sd] * n,
+            wf_label=[sd["wf"]]    * n,
         )))
 
     # ── Y range from data ──────────────────────────────────
@@ -1983,6 +2031,20 @@ def build_dashboard(
             "circle": r_circle, "diamond": r_diamond,
             "asterisk": r_asterisk, "triangle": r_triangle,
         })
+
+        # Per-slot HoverTool scoped only to this slot's line/scatter renderers.
+        # Scoping prevents cross-slot overlap — hovering one line shows only that line's data.
+        p.add_tools(HoverTool(
+            renderers=[r_solid, r_dashed, r_dotted, r_circle, r_diamond, r_asterisk, r_triangle],
+            tooltips=[
+                ("Location", "@loc_name"),
+                ("SSP",      "@ssp_label"),
+                ("Workflow", "@wf_label"),
+                ("Year",     "@years{0}"),
+                ("Median",   "@med{0.0} mm"),
+                ("Range",    "@lo{0.0} – @hi{0.0} mm"),
+            ],
+        ))
 
     # ── Per-slot widgets ───────────────────────────────────
     wf_opts    = [(wf, wf) for wf in wfs]
@@ -2095,7 +2157,7 @@ def build_dashboard(
         // Clear the ColumnDataSource so stale data from a previous selection is not shown.
         // (e.g. VLM has no global variant — switching to global must blank the plot, not leave
         //  the previous local VLM curve visible)
-        source.data = { years: [], med: [], lo: [], hi: [] };
+        source.data = { years: [], med: [], lo: [], hi: [], loc_name: [], ssp_label: [], wf_label: [] };
         source.change.emit();
         band.visible = r_solid.visible = r_dashed.visible = r_dotted.visible =
         r_circle.visible = r_diamond.visible = r_asterisk.visible = r_triangle.visible = false;
@@ -2103,11 +2165,19 @@ def build_dashboard(
         const wide = q_line_sel.value === 'wide';
         const uf_map = {"mm": 1.0, "cm": 0.1, "m": 0.001};
         const uf = uf_map[unit_sel.value] || 1.0;
+        const lo_arr = (wide && d.vlo) ? d.vlo : d.lo;
+        const hi_arr = (wide && d.vhi) ? d.vhi : d.hi;
+        const _n      = d.years.length;
+        const _loc_nm = (location_meta[loc.value] || {}).name || loc.value;
+        const _ssp_lb = ssp_labels[ssp.value] || ssp.value;
         source.data = {
-            years: d.years,
-            med: d.med.map(v => v * uf),
-            lo:  (wide ? d.vlo : d.lo).map(v => v * uf),
-            hi:  (wide ? d.vhi : d.hi).map(v => v * uf),
+            years:     d.years,
+            med:       d.med.map(v => v * uf),
+            lo:        lo_arr.map(v => v * uf),
+            hi:        hi_arr.map(v => v * uf),
+            loc_name:  Array(_n).fill(_loc_nm),
+            ssp_label: Array(_n).fill(_ssp_lb),
+            wf_label:  Array(_n).fill(wf.value),
         };
         source.change.emit();
 
@@ -2195,6 +2265,7 @@ def build_dashboard(
             r_dotted=sr["dotted"], r_circle=sr["circle"], r_diamond=sr["diamond"],
             r_asterisk=sr["asterisk"], r_triangle=sr["triangle"],
             ssp_colors={s: SSP_COLORS[s] for s in ssps if s in SSP_COLORS},
+            ssp_labels={s: SSP_LABELS.get(s, s) for s in ssps},
             slot_color=colors[i],
             comp_styles=COMPONENT_STYLES,
             color_box=sw["color_box"],
@@ -2437,7 +2508,8 @@ examples:
         metavar="LEVEL",
         help=(
             "Confidence level sub-directory to load (default: medium_confidence). "
-            "Options: medium_confidence, low_confidence."
+            "Options: medium_confidence, low_confidence, both. "
+            "Use 'both' to load low and medium confidence together as separate workflow slots."
         ),
     )
     parser.add_argument(
@@ -2507,7 +2579,10 @@ examples:
         log.info("  output     : %s", output_path)
 
         result = load_confidence_files(conf_root, args.confidence_level, args.location_lst)
-        title  = args.title or f"FACTS — {args.confidence_level.replace('_', ' ').title()}"
+        if args.confidence_level == "both":
+            title = args.title or "FACTS — Low & Medium Confidence"
+        else:
+            title = args.title or f"FACTS — {args.confidence_level.replace('_', ' ').title()}"
 
         log.info("SSPs found : %s", result["ssps"])
         log.info("Year span  : %s – %s  (%d time steps)",
