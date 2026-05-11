@@ -1949,8 +1949,15 @@ def build_dashboard(
     sources = []
     for sd in slot_defaults:
         d = data_dict.get(sd["key"], empty_data(len(years)))
+        n = len(d.get("years", []))
+        loc_info_sd = location_meta_js.get(sd["loc"], {})
+        loc_nm_sd   = loc_info_sd.get("name", sd["loc"])
+        ssp_lbl_sd  = SSP_LABELS.get(sd["ssp"], sd["ssp"])
         sources.append(ColumnDataSource(data=dict(
             years=d["years"], med=d["med"], lo=d["lo"], hi=d["hi"],
+            loc_name=[loc_nm_sd]   * n,
+            ssp_label=[ssp_lbl_sd] * n,
+            wf_label=[sd["wf"]]    * n,
         )))
 
     # ── Y range from data ──────────────────────────────────
@@ -2024,6 +2031,20 @@ def build_dashboard(
             "circle": r_circle, "diamond": r_diamond,
             "asterisk": r_asterisk, "triangle": r_triangle,
         })
+
+        # Per-slot HoverTool scoped only to this slot's line/scatter renderers.
+        # Scoping prevents cross-slot overlap — hovering one line shows only that line's data.
+        p.add_tools(HoverTool(
+            renderers=[r_solid, r_dashed, r_dotted, r_circle, r_diamond, r_asterisk, r_triangle],
+            tooltips=[
+                ("Location", "@loc_name"),
+                ("SSP",      "@ssp_label"),
+                ("Workflow", "@wf_label"),
+                ("Year",     "@years{0}"),
+                ("Median",   "@med{0.0} mm"),
+                ("Range",    "@lo{0.0} – @hi{0.0} mm"),
+            ],
+        ))
 
     # ── Per-slot widgets ───────────────────────────────────
     wf_opts    = [(wf, wf) for wf in wfs]
@@ -2136,7 +2157,7 @@ def build_dashboard(
         // Clear the ColumnDataSource so stale data from a previous selection is not shown.
         // (e.g. VLM has no global variant — switching to global must blank the plot, not leave
         //  the previous local VLM curve visible)
-        source.data = { years: [], med: [], lo: [], hi: [] };
+        source.data = { years: [], med: [], lo: [], hi: [], loc_name: [], ssp_label: [], wf_label: [] };
         source.change.emit();
         band.visible = r_solid.visible = r_dashed.visible = r_dotted.visible =
         r_circle.visible = r_diamond.visible = r_asterisk.visible = r_triangle.visible = false;
@@ -2146,11 +2167,17 @@ def build_dashboard(
         const uf = uf_map[unit_sel.value] || 1.0;
         const lo_arr = (wide && d.vlo) ? d.vlo : d.lo;
         const hi_arr = (wide && d.vhi) ? d.vhi : d.hi;
+        const _n      = d.years.length;
+        const _loc_nm = (location_meta[loc.value] || {}).name || loc.value;
+        const _ssp_lb = ssp_labels[ssp.value] || ssp.value;
         source.data = {
-            years: d.years,
-            med: d.med.map(v => v * uf),
-            lo:  lo_arr.map(v => v * uf),
-            hi:  hi_arr.map(v => v * uf),
+            years:     d.years,
+            med:       d.med.map(v => v * uf),
+            lo:        lo_arr.map(v => v * uf),
+            hi:        hi_arr.map(v => v * uf),
+            loc_name:  Array(_n).fill(_loc_nm),
+            ssp_label: Array(_n).fill(_ssp_lb),
+            wf_label:  Array(_n).fill(wf.value),
         };
         source.change.emit();
 
@@ -2238,6 +2265,7 @@ def build_dashboard(
             r_dotted=sr["dotted"], r_circle=sr["circle"], r_diamond=sr["diamond"],
             r_asterisk=sr["asterisk"], r_triangle=sr["triangle"],
             ssp_colors={s: SSP_COLORS[s] for s in ssps if s in SSP_COLORS},
+            ssp_labels={s: SSP_LABELS.get(s, s) for s in ssps},
             slot_color=colors[i],
             comp_styles=COMPONENT_STYLES,
             color_box=sw["color_box"],
