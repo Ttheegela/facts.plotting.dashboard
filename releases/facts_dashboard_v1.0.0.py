@@ -58,7 +58,7 @@ EXPECTED INPUT STRUCTURE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DASHBOARD FEATURES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  • 6 independent configurable line slots
+  • 7 independent configurable line slots
     (workflow × SSP × component × scale × location)
   • Components: total, AIS, GrIS, glaciers, sterodynamics,
     landwaterstorage, VLM
@@ -116,7 +116,7 @@ SSP_COLORS = {
     "ssp370": "#e71d25",   # rgb(231, 29, 37)
     "ssp585": "#951b1e",   # rgb(149, 27, 30)
 }
-_FALLBACK_COLORS = ["#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#b07aa1"]
+_FALLBACK_COLORS = ["#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#b07aa1", "#edc948"]
 
 SSP_LABELS = {
     "ssp119": "SSP1-1.9",
@@ -1268,7 +1268,7 @@ def _build_component_table_section(
             const key = ssp + "|" + comp + "|" + wf_val + "|" + scale_val + "|" + loc_val;
             const d   = window.FACTS_DATA[key];
             if (!d) { new_data[ssp].push(""); continue; }
-            const idx = d.years.indexOf(year_val);
+            const idx = window.FACTS_YEARS.indexOf(year_val);
             if (idx === -1) { new_data[ssp].push(""); continue; }
             const med = d.med[idx] * uf, lo = d.lo[idx] * uf, hi = d.hi[idx] * uf;
             const vlo_raw = (d.vlo !== undefined) ? d.vlo[idx] : null;
@@ -1681,7 +1681,7 @@ def _build_stacked_bar_section(
             const d   = window.FACTS_DATA[key];
             let   val = 0.0;
             if (d) {
-                const idx = d.years.indexOf(year);
+                const idx = window.FACTS_YEARS.indexOf(year);
                 if (idx !== -1 && d[q_key] !== undefined) val = d[q_key][idx];
             }
             xs.push(x);
@@ -1911,14 +1911,14 @@ def build_dashboard(
 
     # ── Default slot configs ────────────────────────────────
     # In single-NC mode there is only 1 SSP/workflow/component — cycle locations
-    # so the 6 slots show 6 different stations instead of 6 identical lines.
+    # so the 7 slots show 7 different stations instead of 7 identical lines.
     # In multi-file mode cycle SSPs as before.
     first_loc = str(all_loc_ids[1]) if len(all_loc_ids) > 1 else str(all_loc_ids[0])
     # Collect non-global loc IDs in order for single-NC location cycling
     local_loc_ids = [lid for lid in all_loc_ids if lid != -1]
 
     slot_defaults = []
-    for i in range(6):
+    for i in range(7):
         if single_nc_mode:
             # Cycle through different locations; SSP/wf/comp fixed to the one available
             cycle_lid = local_loc_ids[i % len(local_loc_ids)] if local_loc_ids else all_loc_ids[0]
@@ -2167,11 +2167,11 @@ def build_dashboard(
         const uf = uf_map[unit_sel.value] || 1.0;
         const lo_arr = (wide && d.vlo) ? d.vlo : d.lo;
         const hi_arr = (wide && d.vhi) ? d.vhi : d.hi;
-        const _n      = d.years.length;
+        const _n      = window.FACTS_YEARS.length;
         const _loc_nm = (location_meta[loc.value] || {}).name || loc.value;
         const _ssp_lb = ssp_labels[ssp.value] || ssp.value;
         source.data = {
-            years:     d.years,
+            years:     window.FACTS_YEARS,
             med:       d.med.map(v => v * uf),
             lo:        lo_arr.map(v => v * uf),
             hi:        hi_arr.map(v => v * uf),
@@ -2446,8 +2446,12 @@ def build_dashboard(
     # Escape </ → <\/ so the browser HTML parser never treats a location name or data
     # value containing "</script>" as closing our script block.
     html = output_path.read_text(encoding="utf-8")
-    data_json = json.dumps(data_dict).replace("</", "<\\/")
-    data_script = "<script>\nwindow.FACTS_DATA = " + data_json + ";\n</script>\n"
+    # Store years once globally — removes the repeated years array from every entry
+    global_years = next((v["years"] for v in data_dict.values() if "years" in v), [])
+    data_stripped = {k: {kk: vv for kk, vv in v.items() if kk != "years"} for k, v in data_dict.items()}
+    years_json = json.dumps(global_years, separators=(',', ':'))
+    data_json  = json.dumps(data_stripped, separators=(',', ':')).replace("</", "<\\/")
+    data_script = "<script>\nwindow.FACTS_YEARS=" + years_json + ";\nwindow.FACTS_DATA=" + data_json + ";\n</script>\n"
     html = html.replace("</head>", data_script + "</head>", 1)
     output_path.write_text(html, encoding="utf-8")
 
@@ -2464,7 +2468,7 @@ def main():
         description=(
             "Generate a self-contained interactive HTML dashboard "
             "from FACTS sea-level projection output (.nc files). "
-            "6 independent line slots: workflow × SSP × component × scale × location."
+            "7 independent line slots: workflow × SSP × component × scale × location."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
