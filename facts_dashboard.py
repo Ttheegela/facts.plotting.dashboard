@@ -1199,8 +1199,9 @@ def _build_component_table_section(
 
     wf_sel   = Select(title="Workflow",         value=default_wf,    options=wf_opts,   width=220)
     year_sel = Select(title="Year",             value=default_year,  options=year_opts, width=120)
+    _scale_opts_tbl = [("global","Global Mean SL"), ("local","Local RSL")] if has_global else [("local","Local RSL")]
     scale_sel= Select(title="Scale",            value=default_scale,
-                      options=[("global","Global Mean SL"), ("local","Local RSL")], width=160)
+                      options=_scale_opts_tbl, width=160)
     # In confidence mode the location dropdown starts at the first real location;
     # in global mode it starts at the placeholder "-1" entry.
     loc_default_str = str(default_loc_int)
@@ -1491,9 +1492,11 @@ def _build_stacked_bar_section(
 
     wf_sel    = Select(title="Workflow:",   value=default_wf,    options=wf_opts,   width=240)
     comp_sel  = Select(title="Component:",  value=default_comp,  options=comp_opts, width=180)
+    _has_global_bar = any("|global|" in k for k in data_dict)
+    _scale_opts_bar = [("local", "Local RSL"), ("global", "Global Mean SL")] if _has_global_bar else [("local", "Local RSL")]
     scale_sel = Select(
         title="Scale:", value=default_scale,
-        options=[("local", "Local RSL"), ("global", "Global Mean SL")], width=160,
+        options=_scale_opts_bar, width=160,
     )
     year_sel  = Select(title="Year:",       value=default_year_str, options=year_opts, width=120)
     q_sel     = Select(title="Quantile:",   value="med",          options=q_opts,    width=180)
@@ -2055,7 +2058,8 @@ def build_dashboard(
     wf_opts    = [(wf, wf) for wf in wfs]
     ssp_opts   = [(ssp, SSP_LABELS.get(ssp, ssp)) for ssp in ssps]
     comp_opts  = [(c, COMPONENT_LABELS.get(c, c)) for c in COMPONENTS]
-    scale_opts = [("local", "Local RSL"), ("global", "Global Mean SL")]
+    has_global_data = any("|global|" in k for k in data_dict)
+    scale_opts = [("local", "Local RSL"), ("global", "Global Mean SL")] if has_global_data else [("local", "Local RSL")]
 
     style_preview_map_js = {
         k: f'<span style="font-family:monospace;font-size:14px;">{v}</span>'
