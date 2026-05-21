@@ -44,8 +44,16 @@ resolve_and_mount() {
     local flag="$1"
     local host_path="$2"
 
-    # Resolve to absolute path — handle the case where the parent dir may not
-    # exist yet (e.g. --output pointing to a new file location).
+    # For input flags, the path must already exist on the host.
+    if [[ "$flag" != "--output" ]]; then
+        local check_path="${host_path%/}"
+        if [[ ! -e "$check_path" ]]; then
+            echo "ERROR: path does not exist: $host_path" >&2
+            echo "       Check the path and try again." >&2
+            exit 1
+        fi
+    fi
+
     local host_dir_raw
     host_dir_raw="$(dirname "$host_path")"
     if [[ "$host_dir_raw" == "." ]]; then
