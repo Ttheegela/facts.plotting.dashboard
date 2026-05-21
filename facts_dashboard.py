@@ -86,7 +86,7 @@ import xarray as xr            # reads NetCDF4 files as labelled arrays
 from bokeh.io import save
 from bokeh.layouts import column, row
 from bokeh.models import (
-    Checkbox, CheckboxGroup, ColumnDataSource, CustomJS, DataTable, Div,
+    Button, Checkbox, CheckboxGroup, ColumnDataSource, CustomJS, DataTable, Div,
     CustomJSTickFormatter, FixedTicker, HTMLTemplateFormatter,
     HoverTool, InlineStyleSheet, Legend, LegendItem, Range1d, RangeSlider,
     Select, TableColumn, TextInput, Toggle,
@@ -1313,7 +1313,58 @@ def _build_component_table_section(
 </div>
 """, width=900)
 
-    return column(comp_head, row(wf_sel, year_sel, scale_sel, column(loc_toggle_comp, loc_search_comp, loc_sel)), data_table)
+    ssp_label_map_tbl = {ssp: SSP_LABELS.get(ssp, ssp) for ssp in ssps}
+    dl_btn_comp = Button(label="Download CSV", button_type="default", width=160)
+    dl_btn_comp.js_on_click(CustomJS(
+        args=dict(
+            wf_sel=wf_sel, year_sel=year_sel, scale_sel=scale_sel, loc_sel=loc_sel,
+            ssps=ssps, comps=comps, unit_sel=unit_sel,
+            ssp_label_map=ssp_label_map_tbl,
+        ),
+        code="""
+        const wf    = wf_sel.value;
+        const year  = parseInt(year_sel.value);
+        const scale = scale_sel.value;
+        const loc   = (scale === "global") ? -1 : parseInt(loc_sel.value);
+        const loc_opt  = loc_sel.options.find(o => o[0] === loc_sel.value);
+        const loc_name = loc_opt ? loc_opt[1] : loc_sel.value;
+        const uf_map = {"mm": 1.0, "cm": 0.1, "m": 0.001};
+        const uf = uf_map[unit_sel.value] || 1.0;
+        const dp_map = {"mm": 1, "cm": 2, "m": 4};
+        const dp = dp_map[unit_sel.value] || 1;
+        const unit = unit_sel.value;
+        const rows = [["Component","SSP","Year","Workflow","Scale","Location",
+                       "Median ("+unit+")","p17 ("+unit+")","p83 ("+unit+")",
+                       "p05 ("+unit+")","p95 ("+unit+")"]];
+        for (let i = 0; i < comps.length; i++) {
+            const comp = comps[i];
+            for (let j = 0; j < ssps.length; j++) {
+                const ssp = ssps[j];
+                const key = ssp+"|"+comp+"|"+wf+"|"+scale+"|"+loc;
+                const d   = window.FACTS_DATA[key];
+                if (!d) continue;
+                const idx = window.FACTS_YEARS.indexOf(year);
+                if (idx === -1) continue;
+                const med = (d.med[idx] * uf).toFixed(dp);
+                const lo  = (d.lo[idx]  * uf).toFixed(dp);
+                const hi  = (d.hi[idx]  * uf).toFixed(dp);
+                const vlo = (d.vlo !== undefined) ? (d.vlo[idx] * uf).toFixed(dp) : "";
+                const vhi = (d.vhi !== undefined) ? (d.vhi[idx] * uf).toFixed(dp) : "";
+                rows.push([comp, ssp_label_map[ssp]||ssp, year, wf, scale, loc_name,
+                           med, lo, hi, vlo, vhi]);
+            }
+        }
+        if (rows.length === 1) return;
+        const csv = rows.map(r => r.map(v => '"'+String(v).replace(/"/g,'""')+'"').join(",")).join("\\n");
+        const blob = new Blob([csv], {type:"text/csv"});
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement("a");
+        a.href = url; a.download = "facts_components.csv"; a.click();
+        URL.revokeObjectURL(url);
+        """,
+    ))
+
+    return column(comp_head, row(wf_sel, year_sel, scale_sel, column(loc_toggle_comp, loc_search_comp, loc_sel)), data_table, dl_btn_comp)
 
 
 def _build_stacked_bar_section(
@@ -1840,6 +1891,47 @@ def _build_stacked_bar_section(
 </div>
 """, width=1200)
 
+    png_btn_bar = Button(label="Save Chart (PNG)", button_type="default", width=170)
+    png_btn_bar.js_on_click(CustomJS(code="""
+        const img = (typeof window.FACTS_captureNthPlot === 'function')
+            ? window.FACTS_captureNthPlot(1) : '';
+        if (!img) return;
+        const a = document.createElement('a');
+        a.href = img; a.download = 'facts_bar_chart.png'; a.click();
+    """))
+
+    csv_btn_bar = Button(label="Download CSV", button_type="default", width=150)
+    csv_btn_bar.js_on_click(CustomJS(
+        args=dict(
+            source_bar=source_bar,
+            wf_sel=wf_sel, comp_sel=comp_sel, scale_sel=scale_sel,
+            year_sel=year_sel, q_sel=q_sel, unit_sel=unit_sel_bar,
+        ),
+        code="""
+        const d = source_bar.data;
+        const n = d.y ? d.y.length : 0;
+        if (n === 0) return;
+        const unit  = unit_sel.value;
+        const wf    = wf_sel.value;
+        const comp  = comp_sel.value;
+        const scale = scale_sel.value;
+        const year  = year_sel.value;
+        const q     = q_sel.value;
+        const rows = [["Location","Lat","Lon","SSP","Year","Workflow","Component","Scale","Quantile",
+                       "Value ("+unit+")"]];
+        for (let i = 0; i < n; i++) {
+            rows.push([d.loc_names[i], d.loc_lat[i], d.loc_lon[i], d.ssp_labels[i],
+                       year, wf, comp, scale, q, d.y[i].toFixed(2)]);
+        }
+        const csv = rows.map(r => r.map(v => '"'+String(v).replace(/"/g,'""')+'"').join(",")).join("\\n");
+        const blob = new Blob([csv], {type:"text/csv"});
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement("a");
+        a.href = url; a.download = "facts_bar_chart.csv"; a.click();
+        URL.revokeObjectURL(url);
+        """,
+    ))
+
     return column(
         bar_head,
         row(wf_sel, comp_sel, scale_sel, year_sel, q_sel, unit_sel_bar),
@@ -1847,6 +1939,7 @@ def _build_stacked_bar_section(
         row(column(loc_toggle, loc_search, chk_loc)),
         y_bar_slider,
         p_bar,
+        row(png_btn_bar, csv_btn_bar),
     )
 
 
@@ -2346,6 +2439,69 @@ def build_dashboard(
         ))
     controls_block = column(*ctrl_rows, row(q_line_sel, unit_sel), x_slider, y_slider)
 
+    png_btn_line = Button(label="Save Chart (PNG)", button_type="default", width=170)
+    png_btn_line.js_on_click(CustomJS(code="""
+        const img = (typeof window.FACTS_captureNthPlot === 'function')
+            ? window.FACTS_captureNthPlot(0) : '';
+        if (!img) return;
+        const a = document.createElement('a');
+        a.href = img; a.download = 'facts_lineplot.png'; a.click();
+    """))
+
+    csv_btn_line = Button(label="Download CSV", button_type="default", width=150)
+    csv_btn_line.js_on_click(CustomJS(
+        args=dict(
+            slot_wfs   =[sw["wf"]    for sw in slot_widgets],
+            slot_ssps  =[sw["ssp"]   for sw in slot_widgets],
+            slot_comps =[sw["comp"]  for sw in slot_widgets],
+            slot_scales=[sw["scale"] for sw in slot_widgets],
+            slot_locs  =[sw["loc"]   for sw in slot_widgets],
+            slot_chks  =[sw["chk"]   for sw in slot_widgets],
+            unit_sel=unit_sel,
+        ),
+        code="""
+        const uf_map = {"mm": 1.0, "cm": 0.1, "m": 0.001};
+        const uf = uf_map[unit_sel.value] || 1.0;
+        const dp_map = {"mm": 1, "cm": 2, "m": 4};
+        const dp = dp_map[unit_sel.value] || 1;
+        const unit = unit_sel.value;
+        const rows = [["Slot","SSP","Workflow","Component","Scale","Location","Year",
+                       "Median ("+unit+")","p17 ("+unit+")","p83 ("+unit+")",
+                       "p05 ("+unit+")","p95 ("+unit+")"]];
+        for (let i = 0; i < slot_wfs.length; i++) {
+            if (!slot_chks[i].active) continue;
+            const wf    = slot_wfs[i].value;
+            const ssp   = slot_ssps[i].value;
+            const comp  = slot_comps[i].value;
+            const scale = slot_scales[i].value;
+            const loc   = (scale === "global") ? -1 : parseInt(slot_locs[i].value);
+            const key   = ssp+"|"+comp+"|"+wf+"|"+scale+"|"+loc;
+            const d     = window.FACTS_DATA[key];
+            if (!d) continue;
+            const loc_opt  = slot_locs[i].options.find(o => o[0] === slot_locs[i].value);
+            const loc_name = loc_opt ? loc_opt[1] : slot_locs[i].value;
+            const ssp_opt  = slot_ssps[i].options.find(o => o[0] === ssp);
+            const ssp_lbl  = ssp_opt ? ssp_opt[1] : ssp;
+            for (let j = 0; j < window.FACTS_YEARS.length; j++) {
+                const med = (d.med[j] * uf).toFixed(dp);
+                const lo  = (d.lo[j]  * uf).toFixed(dp);
+                const hi  = (d.hi[j]  * uf).toFixed(dp);
+                const vlo = (d.vlo !== undefined) ? (d.vlo[j] * uf).toFixed(dp) : "";
+                const vhi = (d.vhi !== undefined) ? (d.vhi[j] * uf).toFixed(dp) : "";
+                rows.push([i+1, ssp_lbl, wf, comp, scale, loc_name,
+                           window.FACTS_YEARS[j], med, lo, hi, vlo, vhi]);
+            }
+        }
+        if (rows.length === 1) return;
+        const csv = rows.map(r => r.map(v => '"'+String(v).replace(/"/g,'""')+'"').join(",")).join("\\n");
+        const blob = new Blob([csv], {type:"text/csv"});
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement("a");
+        a.href = url; a.download = "facts_lineplots.csv"; a.click();
+        URL.revokeObjectURL(url);
+        """,
+    ))
+
     # ── Header ─────────────────────────────────────────────
     desc_head = Div(text=f"""
 <div style="margin-bottom:8px;">
@@ -2438,7 +2594,7 @@ def build_dashboard(
     layout_items = [desc_head]
     if single_nc_banner:
         layout_items.append(single_nc_banner)
-    layout_items += [controls_block, p, text_legend, workflow_table_div]
+    layout_items += [controls_block, p, row(png_btn_line, csv_btn_line), text_legend, workflow_table_div]
     if comp_table_section:
         layout_items.append(comp_table_section)
     layout_items.append(stacked_bar_section)
@@ -2464,8 +2620,84 @@ def build_dashboard(
     data_stripped = {k: {kk: vv for kk, vv in v.items() if kk != "years"} for k, v in data_dict.items()}
     years_json = json.dumps(global_years, separators=(',', ':'))
     data_json  = json.dumps(data_stripped, separators=(',', ':')).replace("</", "<\\/")
+    canvas_helper = """
+<script>
+// Traverse all shadow roots in DOM order and collect canvas groups
+window.FACTS_captureNthPlot = function(n) {
+    var groups = [];
+    function walk(root) {
+        var els = root.querySelectorAll('*');
+        for (var i = 0; i < els.length; i++) {
+            var el = els[i];
+            if (el.shadowRoot) {
+                var cvs = Array.from(el.shadowRoot.querySelectorAll('canvas'))
+                    .filter(function(c) { return c.width > 200 && c.height > 200; });
+                if (cvs.length > 0) groups.push(cvs);
+                walk(el.shadowRoot);
+            }
+        }
+    }
+    walk(document);
+    if (groups.length <= n) return '';
+    var cvs = groups[n];
+    var w = Math.max.apply(null, cvs.map(function(c) { return c.width; }));
+    var h = Math.max.apply(null, cvs.map(function(c) { return c.height; }));
+    var c2 = document.createElement('canvas');
+    c2.width = w; c2.height = h;
+    var ctx = c2.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+    cvs.filter(function(c) { return c.width === w && c.height === h; })
+       .forEach(function(c) { try { ctx.drawImage(c, 0, 0); } catch(e) {} });
+    return c2.toDataURL('image/png');
+};
+
+// Generate an MHTML file — Excel opens .xls MHTML with embedded images correctly
+window.FACTS_downloadMHTML = function(rows, imgData, filename) {
+    var CRLF = '\\r\\n';
+    var bd = '----=_MimePart_' + Math.random().toString(36).slice(2);
+    var hs = 'style="background:#4472C4;color:#fff;padding:5px 10px;font-weight:bold;border:1px solid #2c5282;"';
+    var cs = 'style="padding:4px 8px;border:1px solid #D0D0D0;"';
+    var es = 'style="padding:4px 8px;border:1px solid #D0D0D0;background:#EEF2FF;"';
+    var thead = '<tr>' + rows[0].map(function(h) { return '<th ' + hs + '>' + h + '</th>'; }).join('') + '</tr>';
+    var tbody = rows.slice(1).map(function(r, i) {
+        return '<tr>' + r.map(function(c) { return '<td ' + (i % 2 === 0 ? cs : es) + '>' + c + '</td>'; }).join('') + '</tr>';
+    }).join('');
+    var img_tag = imgData ? '<img src="chart.png" style="max-width:1000px;margin-bottom:14px;"><br>' : '';
+    var html_body = '<html><head><meta charset="UTF-8"><style>body{font-family:Arial,sans-serif;}</style></head><body>'
+        + img_tag
+        + '<table style="border-collapse:collapse;font-size:11px;">'
+        + '<thead>' + thead + '</thead><tbody>' + tbody + '</tbody></table></body></html>';
+
+    var mhtml = 'MIME-Version: 1.0' + CRLF
+        + 'Content-Type: multipart/related; boundary="' + bd + '"' + CRLF + CRLF
+        + '--' + bd + CRLF
+        + 'Content-Type: text/html; charset="utf-8"' + CRLF
+        + 'Content-Location: file:///facts.htm' + CRLF + CRLF
+        + html_body + CRLF + CRLF;
+
+    if (imgData) {
+        var b64 = imgData.split(',')[1] || '';
+        var lines = [];
+        for (var i = 0; i < b64.length; i += 76) lines.push(b64.slice(i, i + 76));
+        mhtml += '--' + bd + CRLF
+            + 'Content-Type: image/png' + CRLF
+            + 'Content-Transfer-Encoding: base64' + CRLF
+            + 'Content-Location: chart.png' + CRLF + CRLF
+            + lines.join(CRLF) + CRLF + CRLF;
+    }
+    mhtml += '--' + bd + '--' + CRLF;
+
+    var blob = new Blob([mhtml], {type: 'application/octet-stream'});
+    var url  = URL.createObjectURL(blob);
+    var a    = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+};
+</script>
+"""
     data_script = "<script>\nwindow.FACTS_YEARS=" + years_json + ";\nwindow.FACTS_DATA=" + data_json + ";\n</script>\n"
-    html = html.replace("</head>", data_script + "</head>", 1)
+    html = html.replace("</head>", canvas_helper + data_script + "</head>", 1)
     output_path.write_text(html, encoding="utf-8")
 
     log.info("Dashboard saved → %s", output_path.resolve())

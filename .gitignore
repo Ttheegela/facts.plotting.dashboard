@@ -7,3 +7,5 @@ __pycache__/
 sample-data/
 reports/
 CHANGES.md
+tests/*
+!tests/.gitkeep
