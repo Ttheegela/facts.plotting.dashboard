@@ -1892,12 +1892,8 @@ def _build_stacked_bar_section(
 """, width=1200)
 
     png_btn_bar = Button(label="Save Chart (PNG)", button_type="default", width=170)
-    png_btn_bar.js_on_click(CustomJS(code="""
-        const img = (typeof window.FACTS_captureNthPlot === 'function')
-            ? window.FACTS_captureNthPlot(1) : '';
-        if (!img) return;
-        const a = document.createElement('a');
-        a.href = img; a.download = 'facts_bar_chart.png'; a.click();
+    png_btn_bar.js_on_click(CustomJS(args=dict(plot=p_bar), code="""
+        window.FACTS_captureByModelId(plot.id, 'facts_bar_chart.png');
     """))
 
     csv_btn_bar = Button(label="Download CSV", button_type="default", width=150)
@@ -1939,7 +1935,7 @@ def _build_stacked_bar_section(
         row(column(loc_toggle, loc_search, chk_loc)),
         y_bar_slider,
         p_bar,
-        row(png_btn_bar, csv_btn_bar),
+        png_btn_bar,
     )
 
 
@@ -2147,6 +2143,20 @@ def build_dashboard(
             ],
         ))
 
+    # ── Per-slot legend ────────────────────────────────────
+    line_legend_items = []
+    for i, (sd, sr) in enumerate(zip(slot_defaults, slot_renderers)):
+        loc_nm = location_meta_js.get(sd["loc"], {}).get("name", sd["loc"])
+        ssp_lb = SSP_LABELS.get(sd["ssp"], sd["ssp"])
+        item = LegendItem(label=f"{ssp_lb} — {loc_nm}", renderers=[sr["band"], sr["solid"]])
+        line_legend_items.append(item)
+    line_legend = Legend(
+        items=line_legend_items, location="top_left", click_policy="hide",
+        label_text_font_size="10px", glyph_width=12, glyph_height=12,
+        spacing=2, padding=4, label_standoff=4,
+    )
+    p.add_layout(line_legend)
+
     # ── Per-slot widgets ───────────────────────────────────
     wf_opts    = [(wf, wf) for wf in wfs]
     ssp_opts   = [(ssp, SSP_LABELS.get(ssp, ssp)) for ssp in ssps]
@@ -2324,8 +2334,14 @@ def build_dashboard(
         style_box.text = style_preview_map[style] || style_preview_map["solid"];
     }
 
-    // Always update location info regardless of data availability
+    // Always update location info and legend label regardless of data availability
     const li = location_meta[loc.value];
+    const _leg_loc = li ? li.name : loc.value;
+    const _leg_ssp = ssp_labels[ssp.value] || ssp.value;
+    if (chk.active) {
+        legend_item.label = {value: _leg_ssp + " — " + _leg_loc};
+        legend_item.renderers = [band, r_solid];
+    }
     if (li) {
         const lat_txt = (li.lat === null || li.lat === undefined || !isFinite(li.lat)) ? "NA" : li.lat.toFixed(3);
         const lon_txt = (li.lon === null || li.lon === undefined || !isFinite(li.lon)) ? "NA" : li.lon.toFixed(3);
@@ -2355,6 +2371,19 @@ def build_dashboard(
         else if (style === "triangle") r_triangle.visible = true;
         else                           r_solid.visible    = true;
     }
+    // Update this slot's legend label if it's being shown
+    if (show) {
+        const _loc = (location_meta[loc.value] || {}).name || loc.value;
+        const _ssp = ssp_labels[ssp.value] || ssp.value;
+        legend_item.label = {value: _ssp + " — " + _loc};
+        legend_item.renderers = [band, r_solid];
+    }
+    // Rebuild legend items list — only include slots that are currently checked
+    const new_items = [];
+    for (let j = 0; j < all_legend_items.length; j++) {
+        if (all_slot_chks[j].active) new_items.push(all_legend_items[j]);
+    }
+    line_legend.items = new_items;
     """
 
     for i, (sw, sr) in enumerate(zip(slot_widgets, slot_renderers)):
@@ -2377,6 +2406,10 @@ def build_dashboard(
             location_meta=location_meta_js,
             q_line_sel=q_line_sel,
             unit_sel=unit_sel,
+            legend_item=line_legend_items[i],
+            line_legend=line_legend,
+            all_legend_items=line_legend_items,
+            all_slot_chks=[sw["chk"] for sw in slot_widgets],
         )
         cb_update = CustomJS(args=common, code=JS_UPDATE)
         cb_vis    = CustomJS(args=common, code=JS_VISIBILITY)
@@ -2440,12 +2473,8 @@ def build_dashboard(
     controls_block = column(*ctrl_rows, row(q_line_sel, unit_sel), x_slider, y_slider)
 
     png_btn_line = Button(label="Save Chart (PNG)", button_type="default", width=170)
-    png_btn_line.js_on_click(CustomJS(code="""
-        const img = (typeof window.FACTS_captureNthPlot === 'function')
-            ? window.FACTS_captureNthPlot(0) : '';
-        if (!img) return;
-        const a = document.createElement('a');
-        a.href = img; a.download = 'facts_lineplot.png'; a.click();
+    png_btn_line.js_on_click(CustomJS(args=dict(plot=p), code="""
+        window.FACTS_captureByModelId(plot.id, 'facts_lineplot.png');
     """))
 
     csv_btn_line = Button(label="Download CSV", button_type="default", width=150)
@@ -2594,7 +2623,7 @@ def build_dashboard(
     layout_items = [desc_head]
     if single_nc_banner:
         layout_items.append(single_nc_banner)
-    layout_items += [controls_block, p, row(png_btn_line, csv_btn_line), text_legend, workflow_table_div]
+    layout_items += [controls_block, p, png_btn_line, text_legend, workflow_table_div]
     if comp_table_section:
         layout_items.append(comp_table_section)
     layout_items.append(stacked_bar_section)
@@ -2622,7 +2651,41 @@ def build_dashboard(
     data_json  = json.dumps(data_stripped, separators=(',', ':')).replace("</", "<\\/")
     canvas_helper = """
 <script>
-// Traverse all shadow roots in DOM order and collect canvas groups
+// Intercept Bokeh.embed.embed_items to capture plot views as they are created.
+// Bokeh 3.8+ does not expose views on window.Bokeh.index, so we hook in here.
+window.FACTS_views = {};
+(function patchBokeh() {
+    if (typeof Bokeh === 'undefined' || !Bokeh.embed || !Bokeh.embed.embed_items) {
+        setTimeout(patchBokeh, 20); return;
+    }
+    var _orig = Bokeh.embed.embed_items;
+    Bokeh.embed.embed_items = async function() {
+        var result = await _orig.apply(this, arguments);
+        (function store(v) {
+            if (!v) return;
+            if (Array.isArray(v)) { v.forEach(store); return; }
+            if (v.model && v.model.id && v.canvas_view) {
+                window.FACTS_views[v.model.id] = v;
+            }
+            if (v.child_views) Object.values(v.child_views).forEach(store);
+            if (v.children) v.children.forEach(store);
+        })(result);
+        return result;
+    };
+})();
+
+window.FACTS_captureByModelId = async function(modelId, filename) {
+    var view = window.FACTS_views[modelId];
+    if (!view || !view.canvas_view) { console.error('FACTS: view not found for', modelId); return; }
+    var canvas = view.canvas_view.compose();
+    if (canvas && canvas.then) canvas = await canvas;
+    var a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = filename;
+    a.click();
+};
+
+// Fallback canvas walk — used if view interception fails
 window.FACTS_captureNthPlot = function(n) {
     var groups = [];
     function walk(root) {
@@ -2647,8 +2710,7 @@ window.FACTS_captureNthPlot = function(n) {
     var ctx = c2.getContext('2d');
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, w, h);
-    cvs.filter(function(c) { return c.width === w && c.height === h; })
-       .forEach(function(c) { try { ctx.drawImage(c, 0, 0); } catch(e) {} });
+    cvs.forEach(function(c) { try { ctx.drawImage(c, 0, 0); } catch(e) {} });
     return c2.toDataURL('image/png');
 };
 
