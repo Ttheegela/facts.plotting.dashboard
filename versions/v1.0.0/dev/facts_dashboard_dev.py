@@ -1,6 +1,122 @@
 #!/usr/bin/env python3
 """
-facts_dashboard.py — FACTS Sea-Level Projection Dashboard Generator
+facts_dashboard_dev.py — FACTS Sea-Level Projection Dashboard Generator (DEVELOPER VERSION)
+Version: 1.0.0
+
+This is the annotated developer copy. Identical in behaviour to facts_dashboard.py
+but has detailed comments explaining the architecture and design decisions.
+Keep this in sync with facts_dashboard.py whenever making changes.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OVERALL ARCHITECTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Phase 1 — Python data pipeline
+  1. Discover all SSP folders under --exp-root (or --ssp-dir / --confidence-root)
+  2. Scan .nc filenames to find which workflows are present
+  3. Load location.lst for tide gauge names and coordinates
+  4. Load every .nc file, compute quantiles, fill data_dict
+  5. Pass data_dict to build_dashboard()
+
+Phase 2 — HTML generation
+  1. build_dashboard() constructs a Bokeh layout (plots, dropdowns, tables, buttons)
+  2. Bokeh serialises the layout to HTML using save() with INLINE resources
+     (all Bokeh JS/CSS is embedded — no CDN, no internet needed)
+  3. Post-processing: data_dict is serialised to JSON and injected as
+     window.FACTS_DATA into <head> of the generated HTML
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WHY window.FACTS_DATA INSTEAD OF CustomJS ARGS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Bokeh's CustomJS lets you pass Python objects as args into JS callbacks.
+If I passed data_dict as an arg, Bokeh would serialise a copy into EACH callback.
+With 7 line slots x ~43,000 data series that means 7x copies of the same data —
+inflating the HTML to 150+ MB (hit this before the fix).
+
+Fix: save() the layout WITHOUT data as args (the layout is just the UI skeleton),
+then manually inject window.FACTS_DATA once into <head>. All 7 callbacks share
+the single global. File size dropped from ~150 MB to ~32 MB for 1030-location runs.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+data_dict KEY FORMAT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  "{ssp}|{component}|{wf}|{scale}|{loc_id}"
+
+  ssp       — e.g. "ssp585", "ssp126", "rco.LL.nz"
+  component — "total", "AIS", "GrIS", "glaciers", "sterodynamics",
+              "landwaterstorage", "vlm"
+  wf        — "wf1e" ... "wf4", or "med_conf" / "low_conf" for confidence mode
+  scale     — "local" (tide gauge RSL) or "global" (mean SL)
+  loc_id    — "-1" for global mean SL; positive int = PSMSL station ID
+
+Each value:
+  { "med": [...], "lo": [...], "hi": [...], "vlo": [...], "vhi": [...], "y": int }
+  p50=med, p17=lo, p83=hi, p05=vlo, p95=vhi
+  "years" is NOT stored here — "y" is an index into window.FACTS_YEAR_SETS (see below)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+window.FACTS_YEAR_SETS — WHY IT EXISTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Different FACTS modules produce .nc files with different year grids:
+  wf2e ice sheet components: 2020–2100 (9 steps)
+  sterodynamics/LWS/total:   2020–2150 (14 steps)
+
+Storing years inside every data_dict entry would repeat the same year array
+~43,000 times in the JSON — wasted space. Instead I deduplicate year arrays,
+store them in window.FACTS_YEAR_SETS = [[...array0...], [...array1...]], and
+each entry just stores "y": index. JS reads: FACTS_YEAR_SETS[d.y].
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RENDERER PRE-CREATION PATTERN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Each line slot pre-creates all 7 renderer types:
+  r_solid, r_dashed, r_dotted, r_circle, r_diamond, r_asterisk, r_triangle
+
+Only one is visible at a time — JS_UPDATE picks which one using COMPONENT_STYLES.
+
+WHY: Bokeh's CustomJS cannot add new renderers after the page loads. If I only
+created one renderer per slot I couldn't switch between dashed (Total) and solid
+(AIS) when the Component dropdown changes. Pre-create all 7, toggle visibility.
+This is the only way to do dynamic line styles in a static, server-free HTML.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+JS_UPDATE — THE CORE CALLBACK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+JS_UPDATE fires on every dropdown change (wf, ssp, comp, scale, loc). Order matters:
+
+  1. Build the data_dict key from current dropdown values
+  2. Compute color and update color_box.text — ALWAYS before the !d check.
+     If you only do this inside the "else" (data exists) branch, switching to a
+     no-data combination leaves the color box stuck at the previous SSP color.
+  3. if (!d) → clear ColumnDataSource, hide all renderers
+  4. else → write new arrays to source.data, apply color, show correct renderer
+  5. source.change.emit() LAST — after all data AND visibility are finalised.
+     Emitting before setting visibility causes Bokeh to render an intermediate
+     state: new data with wrong renderer visible (one-frame flash).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONFIDENCE MODE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Activated with --confidence-root + --confidence-level.
+
+  medium_confidence → workflow tag "med_conf"
+  low_confidence    → workflow tag "low_conf"
+  both              → loads both as two separate workflow options
+
+Confidence .nc files store 107 pre-computed quantiles (not raw samples).
+_CONF_Q_IDX maps p05/p17/p50/p83/p95 to their index in that 107-value array.
+
+Color is always by SSP (same as standard mode) so two lines with the same
+confidence level but different SSPs are visually distinguishable.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+facts_dashboard_dev.py — FACTS Sea-Level Projection Dashboard Generator
 Version: 1.0.0
 
 Generates a fully self-contained, interactive HTML dashboard from FACTS output
@@ -108,6 +224,10 @@ log = logging.getLogger("facts_dashboard")
 # ─────────────────────────────────────────────────────────
 # Colour + label maps
 # ─────────────────────────────────────────────────────────
+#
+# SSP_COLORS uses IPCC AR6 standard colors so our charts match published literature.
+# _FALLBACK_COLORS is used for non-SSP scenarios (RCO, RFF, custom experiment names)
+# that don't have an IPCC-assigned color — cycles through a Tableau-style palette.
 
 SSP_COLORS = {
     "ssp119": "#00adcf",   # rgb(0, 173, 207)
@@ -141,7 +261,10 @@ WF_LABELS = {
     "low_conf": "low_conf — low-confidence AR6 projections",
 }
 
-# Component → line style (drives the actual rendered line style)
+# Component → line style (drives which pre-created renderer is made visible).
+# This is what makes the component legend at the bottom of the page meaningful —
+# each component has a unique style so 7 lines with different components on the
+# same plot are distinguishable even in black-and-white printouts.
 COMPONENT_STYLES = {
     "total":             "dashed",
     "AIS":               "solid",
@@ -198,7 +321,10 @@ WORKFLOW_COMPONENT_FILES = {
 }
 
 # When a workflow component file is missing, sum these sub-files instead.
-# wf1f AIS local: ar5AIS outputs EAIS + WAIS separately — no combined local file exists.
+# wf1f AIS local is a special case — ar5AIS writes EAIS and WAIS as separate files,
+# there is no combined AIS_localsl.nc. So I sum both sub-files at load time.
+# This was Bug #1 in the git history — took a while to find because the missing
+# file silently returned zeros instead of raising an error.
 WORKFLOW_COMPONENT_FALLBACK_SUM = {
     "wf1f": {
         "AIS": {
@@ -234,7 +360,9 @@ COMPONENT_LABELS = {
 }
 
 # Quantiles to extract from each .nc ensemble.
-# Index map used throughout: 0=p05, 1=p17, 2=p50(median), 3=p83, 4=p95
+# Index map: 0=p05, 1=p17, 2=p50(median), 3=p83, 4=p95
+# p17-p83 = IPCC AR6 "likely" range (66% interval) — default shading
+# p05-p95 = IPCC AR6 "very likely" range (90% interval) — wide shading option
 QUANTILES = [0.05, 0.17, 0.50, 0.83, 0.95]
 
 # Confidence files store 107 pre-computed quantiles (no samples axis).
@@ -2268,6 +2396,21 @@ def build_dashboard(
                       options=[("mm", "mm"), ("cm", "cm"), ("m", "m")], width=100)
 
     # ── CustomJS callbacks ─────────────────────────────────
+    # ── JS_UPDATE — the core callback ─────────────────────
+    # This is the single most important JS block in the whole file.
+    # It is templated once and then instantiated for each of the 7 line slots via a loop.
+    # Each slot gets its own copy bound to its own source, renderers, and selectors.
+    #
+    # The callback runs entirely in the browser — no Python is involved after page load.
+    # It reads from window.FACTS_DATA (injected into <head>) using a key built from
+    # the current dropdown values: "{ssp}|{comp}|{wf}|{scale}|{loc}"
+    #
+    # Critical ordering rule (learned the hard way):
+    #   color_box update → if(!d) check → source.data update → source.change.emit()
+    # Putting color_box inside the else branch caused it to stay stale when switching
+    # to a no-data combination (e.g. VLM on Global scale). Putting emit() before
+    # setting renderer visibility caused a visible flash of wrong data.
+    #
     # JS_UPDATE fires when any selector (workflow, SSP, component, scale, location) changes.
     # Key format must match Python's _store_result: "{ssp}|{comp}|{wf}|{scale}|{loc_id}"
     # loc.value is "-1" for Global Mean SL; a positive integer string for a tide gauge.
@@ -2660,6 +2803,20 @@ def build_dashboard(
     # args so Bokeh will NOT serialize it; the output is just the UI skeleton.
     save(dashboard, filename=str(output_path), resources=INLINE, title=title)
 
+    # ── Data injection — why we do this post-save ─────────
+    # Bokeh's save() serialises the layout to HTML, but at that point data_dict
+    # is NOT passed as a CustomJS arg — intentionally. If it were, Bokeh would
+    # embed a full copy of data_dict inside each callback (7 slots = 7x the data).
+    #
+    # Instead we let save() produce a lightweight HTML with just the UI structure,
+    # then we read that HTML as a string and inject window.FACTS_DATA once into <head>.
+    # All 7 callbacks reference this single object.
+    #
+    # The </head> injection point is important — Bokeh's INLINE bundle contains the
+    # literal string "<body>" inside its minified JS, so injecting before </body>
+    # would accidentally land inside the Bokeh bundle and break it. Before </head>
+    # is always safe.
+    #
     # Step 2: post-process — inject data_dict ONCE as window.FACTS_DATA so all
     # callbacks can read it without 7x duplication.
     # Escape </ → <\/ so the browser HTML parser never treats a location name or data

@@ -86,7 +86,7 @@ import xarray as xr            # reads NetCDF4 files as labelled arrays
 from bokeh.io import save
 from bokeh.layouts import column, row
 from bokeh.models import (
-    Checkbox, CheckboxGroup, ColumnDataSource, CustomJS, DataTable, Div,
+    Button, Checkbox, CheckboxGroup, ColumnDataSource, CustomJS, DataTable, Div,
     CustomJSTickFormatter, FixedTicker, HTMLTemplateFormatter,
     HoverTool, InlineStyleSheet, Legend, LegendItem, Range1d, RangeSlider,
     Select, TableColumn, TextInput, Toggle,
@@ -117,6 +117,7 @@ SSP_COLORS = {
     "ssp585": "#951b1e",   # rgb(149, 27, 30)
 }
 _FALLBACK_COLORS = ["#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#b07aa1", "#edc948"]
+
 
 SSP_LABELS = {
     "ssp119": "SSP1-1.9",
@@ -247,6 +248,25 @@ _CONF_COMP_MAP = {"GIS": "GrIS", "verticallandmotion": "vlm"}
 def _r1(arr):
     """Round a float array to 1 decimal place (mm precision). Used throughout for data compaction."""
     return [round(float(v), 1) for v in arr]
+
+# Shared CustomJS strings for location search/toggle (used in both line-plot slots and component table)
+_LOC_SEARCH_JS = """
+        const q = cb_obj.value.trim().toLowerCase();
+        const new_opts = q === ""
+            ? all_opts.slice()
+            : all_opts.filter(([v, l]) => l.toLowerCase().includes(q));
+        if (new_opts.length > 0) {
+            loc_sel.options = new_opts;
+            if (!new_opts.some(([v]) => v === loc_sel.value)) {
+                loc_sel.value = new_opts[0][0];
+            }
+        }
+"""
+
+_LOC_TOGGLE_JS = """
+        search.visible = btn.active;
+        btn.label = btn.active ? 'Search ▲  location' : 'Search ▼  location';
+"""
 
 # Fixed slider bounds
 XMIN_FIXED = 2020
@@ -843,8 +863,12 @@ def load_confidence_files(conf_root: Path,
                     if loc_id not in locations_seen:
                         lat = float(lats[li]) if li < len(lats) else None
                         lon = float(lons[li]) if li < len(lons) else None
+                        if lat is not None and lon is not None:
+                            name = f"{lat:.2f}°N, {lon:.2f}°E"
+                        else:
+                            name = f"Location {loc_id}"
                         locations_seen[loc_id] = {
-                            "name": f"ID {loc_id}",
+                            "name": name,
                             "id":   loc_id,
                             "lat":  lat,
                             "lon":  lon,
@@ -1137,6 +1161,7 @@ def _build_component_table_section(
     # Confidence files only have "local" keys — no global-mean variant exists.
     # Detect this by checking whether any "global" key is present in data_dict.
     has_global = any("|global|" in k for k in data_dict)
+    has_local  = any("|local|"  in k for k in data_dict)
     if has_global:
         default_scale   = "global"
         default_loc_int = -1   # global mean SL
@@ -1199,8 +1224,13 @@ def _build_component_table_section(
 
     wf_sel   = Select(title="Workflow",         value=default_wf,    options=wf_opts,   width=220)
     year_sel = Select(title="Year",             value=default_year,  options=year_opts, width=120)
+    _scale_opts_tbl = (
+        [("global","Global Mean SL"), ("local","Local RSL")] if (has_global and has_local)
+        else [("global","Global Mean SL")] if has_global
+        else [("local","Local RSL")]
+    )
     scale_sel= Select(title="Scale",            value=default_scale,
-                      options=[("global","Global Mean SL"), ("local","Local RSL")], width=160)
+                      options=_scale_opts_tbl, width=160)
     # In confidence mode the location dropdown starts at the first real location;
     # in global mode it starts at the placeholder "-1" entry.
     loc_default_str = str(default_loc_int)
@@ -1213,18 +1243,7 @@ def _build_component_table_section(
     loc_search_comp = TextInput(placeholder="Search location...", width=280, visible=False)
     loc_search_comp.js_on_change("value", CustomJS(
         args=dict(loc_sel=loc_sel, all_opts=loc_options_all),
-        code="""
-        const q = cb_obj.value.trim().toLowerCase();
-        const new_opts = q === ""
-            ? all_opts.slice()
-            : all_opts.filter(([v, l]) => l.toLowerCase().includes(q));
-        if (new_opts.length > 0) {
-            loc_sel.options = new_opts;
-            if (!new_opts.some(([v]) => v === loc_sel.value)) {
-                loc_sel.value = new_opts[0][0];
-            }
-        }
-        """,
+        code=_LOC_SEARCH_JS,
     ))
 
     loc_toggle_comp = Toggle(
@@ -1235,10 +1254,7 @@ def _build_component_table_section(
     )
     loc_toggle_comp.js_on_change("active", CustomJS(
         args=dict(search=loc_search_comp, btn=loc_toggle_comp),
-        code="""
-        search.visible = btn.active;
-        btn.label = btn.active ? 'Search ▲  location' : 'Search ▼  location';
-        """,
+        code=_LOC_TOGGLE_JS,
     ))
 
     # ── CustomJS callback ─────────────────────────────────
@@ -1246,9 +1262,19 @@ def _build_component_table_section(
     # This table iterates over comps (rows) and ssps (columns) for a fixed workflow.
     # Workflow-independent components (sterodynamics, lws, vlm) are stored under every
     # wf key in Python, so the JS lookup is the same regardless of selected workflow.
+
+    # Precompute which workflows have global scale data — used by JS to auto-switch scale
+    # when user selects a workflow that only has local data (e.g. wf2e in gridded runs).
+    wf_has_global = {wf: any(f"|{wf}|global|" in k for k in data_dict) for wf in wfs}
+
     JS_COMP = """
-    const wf_val    = wf_sel.value;
+    let wf_val    = wf_sel.value;
     const year_val  = parseInt(year_sel.value);
+
+    // Auto-switch scale to local if the selected workflow has no global data
+    if (scale_sel.value === "global" && !wf_has_global[wf_val]) {
+        scale_sel.value = "local";
+    }
     const scale_val = scale_sel.value;
     // Global SL uses loc_id=-1 (only one location in global .nc files)
     const loc_val   = (scale_val === "global") ? -1 : parseInt(loc_sel.value);
@@ -1268,8 +1294,9 @@ def _build_component_table_section(
             const key = ssp + "|" + comp + "|" + wf_val + "|" + scale_val + "|" + loc_val;
             const d   = window.FACTS_DATA[key];
             if (!d) { new_data[ssp].push(""); continue; }
-            const idx = window.FACTS_YEARS.indexOf(year_val);
-            if (idx === -1) { new_data[ssp].push(""); continue; }
+            const _yr_sets = window.FACTS_YEAR_SETS || [window.FACTS_YEARS || []];
+            const idx = _yr_sets[d.y !== undefined ? d.y : 0].indexOf(year_val);
+            if (idx === -1) { new_data[ssp].push("—"); continue; }
             const med = d.med[idx] * uf, lo = d.lo[idx] * uf, hi = d.hi[idx] * uf;
             const vlo_raw = (d.vlo !== undefined) ? d.vlo[idx] : null;
             const vhi_raw = (d.vhi !== undefined) ? d.vhi[idx] : null;
@@ -1293,6 +1320,7 @@ def _build_component_table_section(
             scale_sel=scale_sel, loc_sel=loc_sel,
             ssps=ssps, comps=comps,
             unit_sel=unit_sel,
+            wf_has_global=wf_has_global,
         ),
         code=JS_COMP,
     )
@@ -1312,7 +1340,58 @@ def _build_component_table_section(
 </div>
 """, width=900)
 
-    return column(comp_head, row(wf_sel, year_sel, scale_sel, column(loc_toggle_comp, loc_search_comp, loc_sel)), data_table)
+    ssp_label_map_tbl = {ssp: SSP_LABELS.get(ssp, ssp) for ssp in ssps}
+    dl_btn_comp = Button(label="Download CSV", button_type="default", width=160)
+    dl_btn_comp.js_on_click(CustomJS(
+        args=dict(
+            wf_sel=wf_sel, year_sel=year_sel, scale_sel=scale_sel, loc_sel=loc_sel,
+            ssps=ssps, comps=comps, unit_sel=unit_sel,
+            ssp_label_map=ssp_label_map_tbl,
+        ),
+        code="""
+        const wf    = wf_sel.value;
+        const year  = parseInt(year_sel.value);
+        const scale = scale_sel.value;
+        const loc   = (scale === "global") ? -1 : parseInt(loc_sel.value);
+        const loc_opt  = loc_sel.options.find(o => o[0] === loc_sel.value);
+        const loc_name = loc_opt ? loc_opt[1] : loc_sel.value;
+        const uf_map = {"mm": 1.0, "cm": 0.1, "m": 0.001};
+        const uf = uf_map[unit_sel.value] || 1.0;
+        const dp_map = {"mm": 1, "cm": 2, "m": 4};
+        const dp = dp_map[unit_sel.value] || 1;
+        const unit = unit_sel.value;
+        const rows = [["Component","SSP","Year","Workflow","Scale","Location",
+                       "Median ("+unit+")","p17 ("+unit+")","p83 ("+unit+")",
+                       "p05 ("+unit+")","p95 ("+unit+")"]];
+        for (let i = 0; i < comps.length; i++) {
+            const comp = comps[i];
+            for (let j = 0; j < ssps.length; j++) {
+                const ssp = ssps[j];
+                const key = ssp+"|"+comp+"|"+wf+"|"+scale+"|"+loc;
+                const d   = window.FACTS_DATA[key];
+                if (!d) continue;
+                const idx = window.FACTS_YEAR_SETS[d.y !== undefined ? d.y : 0].indexOf(year);
+                if (idx === -1) continue;
+                const med = (d.med[idx] * uf).toFixed(dp);
+                const lo  = (d.lo[idx]  * uf).toFixed(dp);
+                const hi  = (d.hi[idx]  * uf).toFixed(dp);
+                const vlo = (d.vlo !== undefined) ? (d.vlo[idx] * uf).toFixed(dp) : "";
+                const vhi = (d.vhi !== undefined) ? (d.vhi[idx] * uf).toFixed(dp) : "";
+                rows.push([comp, ssp_label_map[ssp]||ssp, year, wf, scale, loc_name,
+                           med, lo, hi, vlo, vhi]);
+            }
+        }
+        if (rows.length === 1) return;
+        const csv = rows.map(r => r.map(v => '"'+String(v).replace(/"/g,'""')+'"').join(",")).join("\\n");
+        const blob = new Blob([csv], {type:"text/csv"});
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement("a");
+        a.href = url; a.download = "facts_components.csv"; a.click();
+        URL.revokeObjectURL(url);
+        """,
+    ))
+
+    return column(comp_head, row(wf_sel, year_sel, scale_sel, column(loc_toggle_comp, loc_search_comp, loc_sel)), data_table, dl_btn_comp)
 
 
 def _build_stacked_bar_section(
@@ -1338,11 +1417,17 @@ def _build_stacked_bar_section(
     plot_ssps = [s for s in SSP_ORDER if s in ssps] + [s for s in ssps if s not in SSP_ORDER]
     n_ssps    = len(plot_ssps)
 
-    # -- Local locations only --
-    local_locs = [(lid, lbl) for lid, lbl in loc_options_all if int(lid) >= 0]
-    loc_ids    = [int(lid) for lid, _ in local_locs]
+    # Prefer local locations; fall back to global-only when no local locations exist
+    local_locs   = [(lid, lbl) for lid, lbl in loc_options_all if int(lid) >= 0]
+    global_only  = len(local_locs) == 0
+    has_local_bar = any("|local|" in k for k in data_dict)
+    if global_only:
+        bar_locs = [(lid, lbl) for lid, lbl in loc_options_all if int(lid) == -1]
+    else:
+        bar_locs = local_locs
+    loc_ids    = [int(lid) for lid, _ in bar_locs]
     loc_names  = [
-        location_meta_js.get(str(lid), {}).get("name", str(lid))
+        location_meta_js.get(str(lid), {}).get("name", "Global Mean" if lid == -1 else str(lid))
         for lid in loc_ids
     ]
     loc_lat = [
@@ -1360,7 +1445,7 @@ def _build_stacked_bar_section(
     # -- Defaults --
     default_wf       = wfs[0]
     default_comp     = "total"
-    default_scale    = "local"
+    default_scale    = "global" if (global_only or not has_local_bar) else "local"
     default_q_key    = "med"
     year_opts        = [str(y) for y in sorted(set(years))]
     default_year_str = "2100" if "2100" in year_opts else year_opts[-1]
@@ -1389,25 +1474,6 @@ def _build_stacked_bar_section(
             return d[q_key][d["years"].index(year)]
         except (ValueError, KeyError):
             return 0.0
-
-    # -- Build flat per-bar arrays for ColumnDataSource --
-    def _build_arrays(comp, wf, scale, year, q_key):
-        xs, ys, colors, ssp_lbls, lnames, lids, llat, llon = [], [], [], [], [], [], [], []
-        for li, loc_id in enumerate(loc_ids):
-            for si, ssp in enumerate(plot_ssps):
-                xs.append(_bar_x(li, si))
-                ys.append(_val(ssp, comp, wf, scale, loc_id, year, q_key))
-                colors.append(SSP_COLORS.get(ssp, _FALLBACK_COLORS[si % len(_FALLBACK_COLORS)]))
-                ssp_lbls.append(SSP_LABELS.get(ssp, ssp))
-                lnames.append(loc_names[li])
-                lids.append(str(loc_id))
-                llat.append(loc_lat[li])
-                llon.append(loc_lon[li])
-        return dict(
-            x=xs, y=ys, colors=colors,
-            ssp_labels=ssp_lbls, loc_names=lnames,
-            loc_ids=lids, loc_lat=llat, loc_lon=llon,
-        )
 
     # Start empty — bar chart is blank until user adds locations via the search panel
     init_data  = dict(x=[], y=[], colors=[], ssp_labels=[], loc_names=[], loc_ids=[], loc_lat=[], loc_lon=[])
@@ -1486,9 +1552,15 @@ def _build_stacked_bar_section(
 
     wf_sel    = Select(title="Workflow:",   value=default_wf,    options=wf_opts,   width=240)
     comp_sel  = Select(title="Component:",  value=default_comp,  options=comp_opts, width=180)
+    _has_global_bar = any("|global|" in k for k in data_dict)
+    _scale_opts_bar = (
+        [("local", "Local RSL"), ("global", "Global Mean SL")] if (_has_global_bar and has_local_bar)
+        else [("global", "Global Mean SL")] if _has_global_bar
+        else [("local", "Local RSL")]
+    )
     scale_sel = Select(
         title="Scale:", value=default_scale,
-        options=[("local", "Local RSL"), ("global", "Global Mean SL")], width=160,
+        options=_scale_opts_bar, width=160,
     )
     year_sel  = Select(title="Year:",       value=default_year_str, options=year_opts, width=120)
     q_sel     = Select(title="Quantile:",   value="med",          options=q_opts,    width=180)
@@ -1681,7 +1753,8 @@ def _build_stacked_bar_section(
             const d   = window.FACTS_DATA[key];
             let   val = 0.0;
             if (d) {
-                const idx = window.FACTS_YEARS.indexOf(year);
+                const _yr_sets = window.FACTS_YEAR_SETS || [window.FACTS_YEARS || []];
+                const idx = _yr_sets[d.y !== undefined ? d.y : 0].indexOf(year);
                 if (idx !== -1 && d[q_key] !== undefined) val = d[q_key][idx];
             }
             xs.push(x);
@@ -1832,6 +1905,43 @@ def _build_stacked_bar_section(
 </div>
 """, width=1200)
 
+    csv_btn_bar = Button(label="Download CSV", button_type="default", width=150)
+    csv_btn_bar.js_on_click(CustomJS(
+        args=dict(
+            source_bar=source_bar,
+            wf_sel=wf_sel, comp_sel=comp_sel, scale_sel=scale_sel,
+            year_sel=year_sel, q_sel=q_sel, unit_sel=unit_sel,
+            q_opts=dict(q_opts),
+        ),
+        code="""
+        const uf_map = {"mm": 1.0, "cm": 0.1, "m": 0.001};
+        const uf = uf_map[unit_sel.value] || 1.0;
+        const dp_map = {"mm": 1, "cm": 2, "m": 4};
+        const dp = dp_map[unit_sel.value] || 1;
+        const unit = unit_sel.value;
+        const d = source_bar.data;
+        if (!d.x || d.x.length === 0) return;
+
+        const q_label = q_opts[q_sel.value] || q_sel.value;
+        const header = ["Location","SSP","Year","Workflow","Component","Scale","Quantile","Value ("+unit+")"];
+        const rows = [header];
+        for (let i = 0; i < d.loc_names.length; i++) {
+            rows.push([
+                d.loc_names[i], d.ssp_labels[i], year_sel.value,
+                wf_sel.value, comp_sel.value, scale_sel.value,
+                q_label, (d.y[i] * uf).toFixed(dp),
+            ]);
+        }
+        if (rows.length === 1) return;
+        const csv = rows.map(r => r.map(v => '"'+String(v).replace(/"/g,'""')+'"').join(",")).join("\\n");
+        const blob = new Blob([csv], {type:"text/csv"});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = "facts_barchart.csv"; a.click();
+        URL.revokeObjectURL(url);
+        """,
+    ))
+
     return column(
         bar_head,
         row(wf_sel, comp_sel, scale_sel, year_sel, q_sel, unit_sel_bar),
@@ -1839,6 +1949,7 @@ def _build_stacked_bar_section(
         row(column(loc_toggle, loc_search, chk_loc)),
         y_bar_slider,
         p_bar,
+        csv_btn_bar,
     )
 
 
@@ -1878,7 +1989,7 @@ def build_dashboard(
         build_dashboard(data_dict, years, locations, location_meta,
                         ssps, wfs, Path("dashboard.html"))
     """
-    def ssp_color(ssp: str, idx: int) -> str:
+    def ssp_color(ssp: str, idx: int, wf: str = "") -> str:
         return SSP_COLORS.get(ssp, _FALLBACK_COLORS[idx % len(_FALLBACK_COLORS)])
 
     # ── Location option lists ──────────────────────────────
@@ -1903,6 +2014,8 @@ def build_dashboard(
         label = (
             f"{name}  (global)"
             if lid == -1
+            else name                                              # name already contains coords
+            if "°" in name
             else f"{name}  ({info['lat']:.2f}°N, {info['lon']:.2f}°E)"
             if info["lat"] is not None
             else name
@@ -1916,6 +2029,8 @@ def build_dashboard(
     first_loc = str(all_loc_ids[1]) if len(all_loc_ids) > 1 else str(all_loc_ids[0])
     # Collect non-global loc IDs in order for single-NC location cycling
     local_loc_ids = [lid for lid in all_loc_ids if lid != -1]
+    _has_local_slots = any("|local|" in k for k in data_dict)
+    _default_slot_scale = "local" if _has_local_slots else "global"
 
     slot_defaults = []
     for i in range(7):
@@ -1926,12 +2041,12 @@ def build_dashboard(
             ssp_d   = ssps[0]
             wf_d    = wfs[0]
             comp_d  = COMPONENTS[0]
-            scale_d = "local"
+            scale_d = _default_slot_scale
         else:
             ssp_d   = ssps[i % len(ssps)]
             wf_d    = wfs[0]
             comp_d  = "total"
-            scale_d = "local"
+            scale_d = _default_slot_scale
             loc_d   = first_loc
 
         key = f"{ssp_d}|{comp_d}|{wf_d}|{scale_d}|{loc_d}"
@@ -1958,6 +2073,7 @@ def build_dashboard(
             loc_name=[loc_nm_sd]   * n,
             ssp_label=[ssp_lbl_sd] * n,
             wf_label=[sd["wf"]]    * n,
+            comp_label=[sd["comp"]] * n,
         )))
 
     # ── Y range from data ──────────────────────────────────
@@ -1991,7 +2107,7 @@ def build_dashboard(
     slot_renderers = []
     colors = []
     for i, sd in enumerate(slot_defaults):
-        color = ssp_color(sd["ssp"], i)
+        color = ssp_color(sd["ssp"], i, sd["wf"])
         colors.append(color)
         src   = sources[i]
         style = COMPONENT_STYLES.get(sd["comp"], "solid")
@@ -2037,20 +2153,41 @@ def build_dashboard(
         p.add_tools(HoverTool(
             renderers=[r_solid, r_dashed, r_dotted, r_circle, r_diamond, r_asterisk, r_triangle],
             tooltips=[
-                ("Location", "@loc_name"),
-                ("SSP",      "@ssp_label"),
-                ("Workflow", "@wf_label"),
-                ("Year",     "@years{0}"),
-                ("Median",   "@med{0.0} mm"),
-                ("Range",    "@lo{0.0} – @hi{0.0} mm"),
+                ("Location",  "@loc_name"),
+                ("SSP",       "@ssp_label"),
+                ("Workflow",  "@wf_label"),
+                ("Component", "@comp_label"),
+                ("Year",      "@years{0}"),
+                ("Median",    "@med{0.0} mm"),
+                ("Range",     "@lo{0.0} – @hi{0.0} mm"),
             ],
         ))
+
+    # ── Per-slot legend ────────────────────────────────────
+    line_legend_items = []
+    for i, (sd, sr) in enumerate(zip(slot_defaults, slot_renderers)):
+        loc_nm = location_meta_js.get(sd["loc"], {}).get("name", sd["loc"])
+        ssp_lb = SSP_LABELS.get(sd["ssp"], sd["ssp"])
+        item = LegendItem(label=f"{ssp_lb} — {sd['comp']} — {loc_nm}", renderers=[sr["band"], sr["solid"]])
+        line_legend_items.append(item)
+    line_legend = Legend(
+        items=line_legend_items, location="top_left", click_policy="hide",
+        label_text_font_size="10px", glyph_width=12, glyph_height=12,
+        spacing=2, padding=4, label_standoff=4,
+    )
+    p.add_layout(line_legend)
 
     # ── Per-slot widgets ───────────────────────────────────
     wf_opts    = [(wf, wf) for wf in wfs]
     ssp_opts   = [(ssp, SSP_LABELS.get(ssp, ssp)) for ssp in ssps]
     comp_opts  = [(c, COMPONENT_LABELS.get(c, c)) for c in COMPONENTS]
-    scale_opts = [("local", "Local RSL"), ("global", "Global Mean SL")]
+    has_global_data = any("|global|" in k for k in data_dict)
+    has_local_data  = any("|local|"  in k for k in data_dict)
+    scale_opts = (
+        [("local", "Local RSL"), ("global", "Global Mean SL")] if (has_global_data and has_local_data)
+        else [("global", "Global Mean SL")] if has_global_data
+        else [("local", "Local RSL")]
+    )
 
     style_preview_map_js = {
         k: f'<span style="font-family:monospace;font-size:14px;">{v}</span>'
@@ -2082,18 +2219,7 @@ def build_dashboard(
         loc_search_slot = TextInput(placeholder="Search...", width=240, visible=False)
         loc_search_slot.js_on_change("value", CustomJS(
             args=dict(loc_sel=loc_sel, all_opts=loc_options_all),
-            code="""
-            const q = cb_obj.value.trim().toLowerCase();
-            const new_opts = q === ""
-                ? all_opts.slice()
-                : all_opts.filter(([v, l]) => l.toLowerCase().includes(q));
-            if (new_opts.length > 0) {
-                loc_sel.options = new_opts;
-                if (!new_opts.some(([v]) => v === loc_sel.value)) {
-                    loc_sel.value = new_opts[0][0];
-                }
-            }
-            """,
+            code=_LOC_SEARCH_JS,
         ))
 
         # Toggle shows/hides the search bar. loc_sel always stays visible (Bokeh Select
@@ -2106,11 +2232,8 @@ def build_dashboard(
             width=240,
         )
         loc_toggle_slot.js_on_change("active", CustomJS(
-            args=dict(search_box=loc_search_slot, btn=loc_toggle_slot),
-            code="""
-            search_box.visible = btn.active;
-            btn.label = btn.active ? 'Search ▲  location' : 'Search ▼  location';
-            """,
+            args=dict(search=loc_search_slot, btn=loc_toggle_slot),
+            code=_LOC_TOGGLE_JS,
         ))
 
         color_box    = Div(text=_color_box_html(color),  width=30,  height=50)
@@ -2152,12 +2275,21 @@ def build_dashboard(
     const key = ssp.value + "|" + comp.value + "|" + wf.value + "|" + scale.value + "|" + loc.value;
     const d   = window.FACTS_DATA[key];
 
+    // Always update color box immediately — regardless of whether data exists.
+    // Without this, switching to a no-data combination and then back leaves the
+    // color box stale (stuck on the previous SSP color).
+    // Color is always by SSP so multiple confidence-level lines remain distinguishable.
+    const c = ssp_colors[ssp.value] || slot_color;
+    color_box.text = `<div style="display:inline-block;width:18px;height:18px;
+        background-color:${c};border:1px solid #444;border-radius:3px;
+        margin-top:6px;"></div>`;
+
     if (!d) {
         console.warn("No data for key:", key);
         // Clear the ColumnDataSource so stale data from a previous selection is not shown.
         // (e.g. VLM has no global variant — switching to global must blank the plot, not leave
         //  the previous local VLM curve visible)
-        source.data = { years: [], med: [], lo: [], hi: [], loc_name: [], ssp_label: [], wf_label: [] };
+        source.data = { years: [], med: [], lo: [], hi: [], loc_name: [], ssp_label: [], wf_label: [], comp_label: [] };
         source.change.emit();
         band.visible = r_solid.visible = r_dashed.visible = r_dotted.visible =
         r_circle.visible = r_diamond.visible = r_asterisk.visible = r_triangle.visible = false;
@@ -2167,25 +2299,26 @@ def build_dashboard(
         const uf = uf_map[unit_sel.value] || 1.0;
         const lo_arr = (wide && d.vlo) ? d.vlo : d.lo;
         const hi_arr = (wide && d.vhi) ? d.vhi : d.hi;
-        const _n      = window.FACTS_YEARS.length;
+        const _yr_sets = window.FACTS_YEAR_SETS || [window.FACTS_YEARS || []];
+        const years   = _yr_sets[d.y !== undefined ? d.y : 0];
+        const _n      = years.length;
         const _loc_nm = (location_meta[loc.value] || {}).name || loc.value;
         const _ssp_lb = ssp_labels[ssp.value] || ssp.value;
         source.data = {
-            years:     window.FACTS_YEARS,
-            med:       d.med.map(v => v * uf),
-            lo:        lo_arr.map(v => v * uf),
-            hi:        hi_arr.map(v => v * uf),
-            loc_name:  Array(_n).fill(_loc_nm),
-            ssp_label: Array(_n).fill(_ssp_lb),
-            wf_label:  Array(_n).fill(wf.value),
+            years:      years,
+            med:        d.med.map(v => v * uf),
+            lo:         lo_arr.map(v => v * uf),
+            hi:         hi_arr.map(v => v * uf),
+            loc_name:   Array(_n).fill(_loc_nm),
+            ssp_label:  Array(_n).fill(_ssp_lb),
+            wf_label:   Array(_n).fill(wf.value),
+            comp_label: Array(_n).fill(comp.value),
         };
-        source.change.emit();
 
         // Restore band visibility — may have been hidden by a previous no-data selection
         band.visible = chk.active;
 
-        // Colour: SSP_COLORS for known SSPs, fixed slot color for everything else
-        const c = ssp_colors[ssp.value] || slot_color;
+        // Apply colour to all renderers — c was already computed above
         band.glyph.fill_color       = c;
         r_solid.glyph.line_color    = c;
         r_dashed.glyph.line_color   = c;
@@ -2194,14 +2327,7 @@ def build_dashboard(
         r_diamond.glyph.line_color  = c;
         r_asterisk.glyph.line_color = c;
         r_triangle.glyph.line_color = c;
-        band.change.emit();
 
-        // Color box
-        color_box.text = `<div style="display:inline-block;width:18px;height:18px;
-            background-color:${c};border:1px solid #444;border-radius:3px;
-            margin-top:6px;"></div>`;
-
-        // Style from component
         const style = comp_styles[comp.value] || "solid";
         r_solid.visible = r_dashed.visible = r_dotted.visible = r_circle.visible =
         r_diamond.visible = r_asterisk.visible = r_triangle.visible = false;
@@ -2220,10 +2346,20 @@ def build_dashboard(
         }
 
         style_box.text = style_preview_map[style] || style_preview_map["solid"];
+
+        // Emit once, after data + visibility + color are all finalized — prevents Bokeh
+        // from rendering an intermediate state with new data but old renderer visible
+        source.change.emit();
     }
 
-    // Always update location info regardless of data availability
+    // Always update location info and legend label regardless of data availability
     const li = location_meta[loc.value];
+    const _leg_loc = li ? li.name : loc.value;
+    const _leg_ssp = ssp_labels[ssp.value] || ssp.value;
+    if (chk.active) {
+        legend_item.label = {value: _leg_ssp + " — " + comp.value + " — " + _leg_loc};
+        legend_item.renderers = [band, r_solid];
+    }
     if (li) {
         const lat_txt = (li.lat === null || li.lat === undefined || !isFinite(li.lat)) ? "NA" : li.lat.toFixed(3);
         const lon_txt = (li.lon === null || li.lon === undefined || !isFinite(li.lon)) ? "NA" : li.lon.toFixed(3);
@@ -2253,6 +2389,19 @@ def build_dashboard(
         else if (style === "triangle") r_triangle.visible = true;
         else                           r_solid.visible    = true;
     }
+    // Update this slot's legend label if it's being shown
+    if (show) {
+        const _loc = (location_meta[loc.value] || {}).name || loc.value;
+        const _ssp = ssp_labels[ssp.value] || ssp.value;
+        legend_item.label = {value: _ssp + " — " + _loc};
+        legend_item.renderers = [band, r_solid];
+    }
+    // Rebuild legend items list — only include slots that are currently checked
+    const new_items = [];
+    for (let j = 0; j < all_legend_items.length; j++) {
+        if (all_slot_chks[j].active) new_items.push(all_legend_items[j]);
+    }
+    line_legend.items = new_items;
     """
 
     for i, (sw, sr) in enumerate(zip(slot_widgets, slot_renderers)):
@@ -2275,6 +2424,10 @@ def build_dashboard(
             location_meta=location_meta_js,
             q_line_sel=q_line_sel,
             unit_sel=unit_sel,
+            legend_item=line_legend_items[i],
+            line_legend=line_legend,
+            all_legend_items=line_legend_items,
+            all_slot_chks=[sw["chk"] for sw in slot_widgets],
         )
         cb_update = CustomJS(args=common, code=JS_UPDATE)
         cb_vis    = CustomJS(args=common, code=JS_VISIBILITY)
@@ -2337,11 +2490,72 @@ def build_dashboard(
         ))
     controls_block = column(*ctrl_rows, row(q_line_sel, unit_sel), x_slider, y_slider)
 
+    csv_btn_line = Button(label="Download CSV", button_type="default", width=150)
+    csv_btn_line.js_on_click(CustomJS(
+        args=dict(
+            slot_widgets=[
+                dict(wf=sw["wf"], ssp=sw["ssp"], comp=sw["comp"],
+                     scale=sw["scale"], loc=sw["loc"], chk=sw["chk"])
+                for sw in slot_widgets
+            ],
+            location_meta=location_meta_js,
+            ssp_labels={s: SSP_LABELS.get(s, s) for s in ssps},
+            unit_sel=unit_sel,
+            q_line_sel=q_line_sel,
+        ),
+        code="""
+        const uf_map = {"mm": 1.0, "cm": 0.1, "m": 0.001};
+        const uf = uf_map[unit_sel.value] || 1.0;
+        const dp_map = {"mm": 1, "cm": 2, "m": 4};
+        const dp = dp_map[unit_sel.value] || 1;
+        const unit = unit_sel.value;
+        const wide = q_line_sel.value === 'wide';
+
+        const header = ["Line","Workflow","SSP","Component","Scale","Location",
+                        "Year","Median ("+unit+")","p17 ("+unit+")","p83 ("+unit+")",
+                        "p05 ("+unit+")","p95 ("+unit+")"];
+        const rows = [header];
+
+        for (let i = 0; i < slot_widgets.length; i++) {
+            const sw = slot_widgets[i];
+            if (!sw.chk.active) continue;
+            const key = sw.ssp.value+"|"+sw.comp.value+"|"+sw.wf.value+"|"+sw.scale.value+"|"+sw.loc.value;
+            const d = window.FACTS_DATA[key];
+            if (!d) continue;
+            const yr_sets = window.FACTS_YEAR_SETS || [window.FACTS_YEARS || []];
+            const years = yr_sets[d.y !== undefined ? d.y : 0];
+            const lo_arr = (wide && d.vlo) ? d.vlo : d.lo;
+            const hi_arr = (wide && d.vhi) ? d.vhi : d.hi;
+            const loc_info = location_meta[sw.loc.value] || {};
+            const loc_name = loc_info.name || sw.loc.value;
+            const ssp_lbl = ssp_labels[sw.ssp.value] || sw.ssp.value;
+            for (let j = 0; j < years.length; j++) {
+                rows.push([
+                    "Line "+(i+1), sw.wf.value, ssp_lbl, sw.comp.value,
+                    sw.scale.value, loc_name, years[j],
+                    (d.med[j]*uf).toFixed(dp),
+                    (lo_arr[j]*uf).toFixed(dp),
+                    (hi_arr[j]*uf).toFixed(dp),
+                    (d.vlo ? (d.vlo[j]*uf).toFixed(dp) : ""),
+                    (d.vhi ? (d.vhi[j]*uf).toFixed(dp) : ""),
+                ]);
+            }
+        }
+        if (rows.length === 1) return;
+        const csv = rows.map(r => r.map(v => '"'+String(v).replace(/"/g,'""')+'"').join(",")).join("\\n");
+        const blob = new Blob([csv], {type:"text/csv"});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = "facts_lineplot.csv"; a.click();
+        URL.revokeObjectURL(url);
+        """,
+    ))
+
     # ── Header ─────────────────────────────────────────────
-    desc_head = Div(text=f"""
+    desc_head = Div(text="""
 <div style="margin-bottom:8px;">
 <br>
-  <b>{title}</b><br><br>
+  <b>FACTS Plotting Dashboard</b><br><br>
   Select a <b>workflow</b>, <b>Scenario</b> and <b>Component</b> to view
   <u>median</u> (p50) and <u>17th&#8211;83rd percentile</u> (shading).<br>
   For a description of <b>Workflows</b>, see the table below.
@@ -2375,11 +2589,14 @@ def build_dashboard(
 
     # ── Citation + workflow table ───────────────────────────
     citation = Div(text=f"""
-<div style="margin-bottom:8px;">
-<br>
-  Generated by <code>facts_dashboard.py</code>.
-  Values shown in the selected unit (mm by default) relative to the experiment base year. Shading = p17&#8211;p83.
-  {_workflow_table_html()}
+<div style="margin-top:24px;padding:12px 16px;border-top:1px solid #ddd;font-size:12px;color:#444;line-height:1.8;">
+  Developed and maintained by <b>Tarun Theegela</b>, <b>Praveen Kumar</b>, <b>Bob Kopp</b>.<br>
+  FACTS (Framework for Assessing Changes To Sea-level):
+  <a href="https://doi.org/10.5194/gmd-16-7461-2023">Kopp et al. (2023), Geosci. Model Dev.</a><br>
+  <span style="color:#888;font-size:11px;">
+    Values shown in the selected unit (mm by default) relative to the experiment base year.
+    Shading = p17&#8211;p83 (narrow) or p05&#8211;p95 (wide).
+  </span>
 </div>
 """, width=900)
 
@@ -2422,10 +2639,12 @@ def build_dashboard(
     else:
         comp_table_section = None
 
+    workflow_table_div = Div(text=_workflow_table_html(), width=900)
+
     layout_items = [desc_head]
     if single_nc_banner:
         layout_items.append(single_nc_banner)
-    layout_items += [controls_block, p, text_legend]
+    layout_items += [controls_block, p, csv_btn_line, text_legend, workflow_table_div]
     if comp_table_section:
         layout_items.append(comp_table_section)
     layout_items.append(stacked_bar_section)
@@ -2446,12 +2665,34 @@ def build_dashboard(
     # Escape </ → <\/ so the browser HTML parser never treats a location name or data
     # value containing "</script>" as closing our script block.
     html = output_path.read_text(encoding="utf-8")
-    # Store years once globally — removes the repeated years array from every entry
-    global_years = next((v["years"] for v in data_dict.values() if "years" in v), [])
-    data_stripped = {k: {kk: vv for kk, vv in v.items() if kk != "years"} for k, v in data_dict.items()}
-    years_json = json.dumps(global_years, separators=(',', ':'))
-    data_json  = json.dumps(data_stripped, separators=(',', ':')).replace("</", "<\\/")
-    data_script = "<script>\nwindow.FACTS_YEARS=" + years_json + ";\nwindow.FACTS_DATA=" + data_json + ";\n</script>\n"
+    # Build a compact set of unique year arrays across all keys.
+    # Different FACTS modules (sterodynamics, LWS, VLM) can produce NC files with
+    # different year grids.  Storing a per-key index "y" lets JS pick the right array
+    # for each component instead of using a single global FACTS_YEARS that may mismatch.
+    year_arrays: list = []
+    _ytuple_to_idx: dict = {}
+    for v in data_dict.values():
+        yt = tuple(v.get("years", []))
+        if yt not in _ytuple_to_idx:
+            _ytuple_to_idx[yt] = len(year_arrays)
+            year_arrays.append(list(yt))
+    data_stripped = {}
+    for k, v in data_dict.items():
+        yt = tuple(v.get("years", []))
+        entry = {kk: vv for kk, vv in v.items() if kk != "years"}
+        entry["y"] = _ytuple_to_idx[yt]
+        data_stripped[k] = entry
+    year_sets_json = json.dumps(year_arrays, separators=(',', ':'))
+    data_json      = json.dumps(data_stripped, separators=(',', ':')).replace("</", "<\\/")
+    # FACTS_YEAR_SETS: array of unique year arrays; each data entry carries "y" = index into this.
+    # FACTS_YEARS kept as the 0th array for any code that still references it directly.
+    data_script = (
+        "<script>\n"
+        "window.FACTS_YEAR_SETS=" + year_sets_json + ";\n"
+        "window.FACTS_YEARS=window.FACTS_YEAR_SETS[0];\n"
+        "window.FACTS_DATA=" + data_json + ";\n"
+        "</script>\n"
+    )
     html = html.replace("</head>", data_script + "</head>", 1)
     output_path.write_text(html, encoding="utf-8")
 
@@ -2525,7 +2766,7 @@ examples:
         ),
     )
     parser.add_argument("--output", type=Path, default=None, metavar="FILE",
-                        help="Output HTML path (default: facts_dashboard.html next to exp-root)")
+                        help="Output HTML path (default: facts_dashboard.html in current directory)")
     parser.add_argument("--title", default=None,
                         help="Dashboard title shown in the header (auto-generated if omitted)")
     parser.add_argument("--verbose", action="store_true",
@@ -2611,9 +2852,9 @@ examples:
         sys.exit(1)
 
     if exp_root:
-        default_out = exp_root / "facts_dashboard.html"
+        default_out = Path("facts_dashboard.html")
     elif args.ssp_dirs:
-        default_out = Path(args.ssp_dirs[0]).resolve() / "facts_dashboard.html"
+        default_out = Path("facts_dashboard.html")
     else:
         default_out = Path("facts_dashboard.html")
     output_path = (args.output or default_out).resolve()

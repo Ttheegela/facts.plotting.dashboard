@@ -5,7 +5,4 @@ __pycache__/
 .Rhistory
 .claude/
 sample-data/
-reports/
-CHANGES.md
-tests/*
-!tests/.gitkeep
+test-outputs/
