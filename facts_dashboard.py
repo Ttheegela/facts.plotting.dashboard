@@ -2693,7 +2693,13 @@ def build_dashboard(
         "window.FACTS_DATA=" + data_json + ";\n"
         "</script>\n"
     )
-    html = html.replace("</head>", data_script + "</head>", 1)
+    # Anchor on the LAST "</head>" rather than the first: some Bokeh bundled
+    # dependencies (e.g. DOMPurify's XHTML-wrap template string) contain the
+    # literal substring "</head>" inside their own minified JS, appearing
+    # before the real closing tag. A first-match replace would splice
+    # data_script into the middle of that bundled script and corrupt it.
+    idx = html.rfind("</head>")
+    html = html[:idx] + data_script + html[idx:]
     output_path.write_text(html, encoding="utf-8")
 
     log.info("Dashboard saved → %s", output_path.resolve())
